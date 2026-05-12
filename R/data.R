@@ -103,9 +103,14 @@ decode_arrow_ipc <- function(bytes) {
   )
   # Arrow string columns land as `character` in R; rtemis's ML pipeline
   # expects categoricals as `factor`. DuckDB-WASM keeps text columns as
-  # plain strings (good for echarts), so this is the single boundary
+  # plain strings (good for ECharts), so this is the single boundary
   # where we coerce. Numeric / integer / logical columns are unaffected.
-  data.table::as.data.table(as.data.frame(tbl), stringsAsFactors = TRUE)
+  x <- data.table::as.data.table(as.data.frame(tbl))
+  # Convert all character columns to factors in-place
+  x[,
+    names(.SD) := lapply(.SD, as.factor),
+    .SDcols = sapply(x, is.character)
+  ]
 } # /rtemis::decode_arrow_ipc
 
 
