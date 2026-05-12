@@ -29,7 +29,7 @@
 #' @keywords internal
 #' @noRd
 generate_token <- function() {
-  check_dependencies("openssl")
+  rtemis.core::check_dependencies("openssl")
   bytes <- openssl::rand_bytes(8L)
   hex <- paste0(sprintf("%02x", as.integer(bytes)), collapse = "")
   # Group into four 4-char blocks: `xxxx-xxxx-xxxx-xxxx`

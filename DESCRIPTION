@@ -12,19 +12,22 @@ ByteCompile: yes
 Depends:
     R (>= 4.1.0)
 Imports:
-    grDevices,
-    graphics,
-    stats,
     methods,
     utils,
     S7,
     data.table,
-    htmltools,
-    cli
+    cli,
+    rtemis (>= 1.1.0),
+    rtemis.core,
+    jsonlite,
+    later,
+    mirai,
+    nanonext,
+    openssl
 Suggests:
     arrow,
-    mirai,
-    nanonext
+    callr,
+    testthat (>= 3.0.0)
 Encoding: UTF-8
 Config/testthat/edition: 3
 Roxygen: list(markdown = TRUE)

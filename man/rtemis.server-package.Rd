@@ -6,10 +6,12 @@
 \alias{rtemis.server-package}
 \title{rtemis.server: rtemis Server}
 \description{
-rtemis Websocket Server to allow rtemislive connections
+Local WebSocket server that bridges browser-based rtemislive clients
+to a persistent R session running rtemis. See \code{vignette("rtemislive")}
+(TODO) and \verb{specs/} for the wire protocol.
 }
 \details{
-\pkg{rtemis.server}: Amino Acid Annotation format
+\pkg{rtemis.server}: rtemis WebSocket server
 }
 \seealso{
 Useful links:

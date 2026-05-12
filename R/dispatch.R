@@ -502,7 +502,7 @@ handle_algorithm_describe <- function(conn, frame, server) {
   }
 
   alg_name <- tryCatch(
-    get_alg_name(name),
+    rtemis:::get_alg_name(name),
     error = function(e) {
       cli::cli_abort(
         paste0("Unknown algorithm `", name, "`."),
@@ -532,12 +532,12 @@ handle_algorithm_describe <- function(conn, frame, server) {
       )
     }
   )
-  tunable_set <- if (S7_inherits(hp, Hyperparameters)) {
+  tunable_set <- if (S7_inherits(hp, rtemis:::Hyperparameters)) {
     prop(hp, "tunable_hyperparameters")
   } else {
     character()
   }
-  hp_values <- if (S7_inherits(hp, Hyperparameters)) {
+  hp_values <- if (S7_inherits(hp, rtemis:::Hyperparameters)) {
     prop(hp, "hyperparameters")
   } else {
     list()
@@ -940,7 +940,7 @@ handle_data_delete <- function(conn, frame, server) {
 #' - `algorithm` — character, see `algorithms` method
 #' - `hyperparameters` — JSON object matching one of the `setup_*` shapes
 #' - `preprocessor_config` — JSON object accepted by `setup_Preprocessor()`
-#' - `tuner_config` — JSON object accepted by `list_to_TunerConfig()`
+#' - `tuner_config` — JSON object accepted by `rtemis:::list_to_TunerConfig()`
 #' - `outer_resampling_config` — JSON object accepted by
 #'   `list_to_ResamplerConfig()`
 #' - `execution_config` — JSON object accepted by `setup_ExecutionConfig()`
@@ -1208,7 +1208,7 @@ handle_job_result <- function(conn, frame, server) {
     ))
   }
   if (slice == "metrics") {
-    if (!S7_inherits(result, Supervised)) {
+    if (!S7_inherits(result, rtemis:::Supervised)) {
       cli::cli_abort(
         "`metrics` slice requires a `Supervised` result.",
         class = "rtemislive_invalid_params"

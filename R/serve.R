@@ -96,7 +96,7 @@ serve <- function(
   verbosity = 1L
 ) {
   # %% Dependency checks -----
-  check_dependencies("nanonext", "mirai", "later", "jsonlite")
+  rtemis.core::check_dependencies("nanonext", "mirai", "later", "jsonlite")
 
   # %% Arg validation -----
   if (is.null(port)) {

@@ -69,7 +69,7 @@ encode_arrow_ipc <- function(df) {
 #' @keywords internal
 #' @noRd
 predictions_table <- function(sup) {
-  if (!S7_inherits(sup, Supervised)) {
+  if (!S7_inherits(sup, rtemis:::Supervised)) {
     cli::cli_abort(
       "`predictions` slice requires a `Supervised` result.",
       class = "rtemislive_invalid_params"
@@ -96,7 +96,7 @@ predictions_table <- function(sup) {
     validation = "predicted_prob_validation",
     test = "predicted_prob_test"
   )
-  has_probs <- S7_inherits(sup, Classification)
+  has_probs <- S7_inherits(sup, rtemis:::Classification)
 
   pieces <- list()
   for (split_name in names(splits)) {
@@ -164,14 +164,14 @@ predictions_table <- function(sup) {
 #' @keywords internal
 #' @noRd
 varimp_table <- function(sup) {
-  if (!S7_inherits(sup, Supervised)) {
+  if (!S7_inherits(sup, rtemis:::Supervised)) {
     return(NULL)
   }
   vi <- prop(sup, "varimp")
   if (is.null(vi)) {
     return(NULL)
   }
-  if (S7_inherits(vi, VariableImportance)) {
+  if (S7_inherits(vi, rtemis:::VariableImportance)) {
     return(prop(vi, "data"))
   }
   NULL
