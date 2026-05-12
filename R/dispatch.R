@@ -940,9 +940,9 @@ handle_data_delete <- function(conn, frame, server) {
 #' - `algorithm` — character, see `algorithms` method
 #' - `hyperparameters` — JSON object matching one of the `setup_*` shapes
 #' - `preprocessor_config` — JSON object accepted by `setup_Preprocessor()`
-#' - `tuner_config` — JSON object accepted by `rtemis:::list_to_TunerConfig()`
+#' - `tuner_config` — JSON object accepted by `rtemis::.list_to_TunerConfig()`
 #' - `outer_resampling_config` — JSON object accepted by
-#'   `list_to_ResamplerConfig()`
+#'   `rtemis::.list_to_ResamplerConfig()`
 #' - `execution_config` — JSON object accepted by `setup_ExecutionConfig()`
 #' - `weights` — character; column name in the dataset used as weights
 #' - `question` — character; user-provided label for the run
@@ -994,7 +994,7 @@ handle_train <- function(conn, frame, server) {
         algorithm = algorithm,
         hyperparameters = params[["hyperparameters"]]
       ),
-      list_to_Hyperparameters,
+      rtemis::.list_to_Hyperparameters,
       "hyperparameters"
     )
   }
@@ -1005,7 +1005,7 @@ handle_train <- function(conn, frame, server) {
   )
   tn <- parse_or_abort(
     params[["tuner_config"]],
-    list_to_TunerConfig,
+    rtemis::.list_to_TunerConfig,
     "tuner_config"
   )
   # UI form is built from `setup_Resampler()` formals (n_resamples, type,
