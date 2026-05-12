@@ -1,0 +1,32 @@
+Package: rtemis.server
+Version: 0.0.1
+Title: 'rtemis' Server
+Date: 2026-05-12
+Authors@R: person(given = "E.D.", family = "Gennatas", role = c("aut", "cre", "cph"), 
+    email = "gennatas@gmail.com", comment = c(ORCID = "0000-0001-9280-3609"))
+Description: Create a websocket server to run 'rtemis' functions from an 'rtemislive' client.
+License: GPL (>= 3)
+URL: https://www.rtemis.org
+BugReports: https://github.com/rtemis-org/rtemis.server/issues
+ByteCompile: yes
+Depends:
+    R (>= 4.1.0)
+Imports:
+    grDevices,
+    graphics,
+    stats,
+    methods,
+    utils,
+    S7,
+    data.table,
+    htmltools,
+    cli
+Suggests:
+    arrow,
+    mirai,
+    nanonext
+Encoding: UTF-8
+Config/testthat/edition: 3
+Roxygen: list(markdown = TRUE)
+LazyData: true
+Config/roxygen2/version: 8.0.0
