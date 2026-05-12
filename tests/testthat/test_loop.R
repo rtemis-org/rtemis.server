@@ -2,12 +2,13 @@
 # ::rtemis::
 # 2026- EDG rtemis.org
 
-
 # Helpers --------------------------------------------------------------------
 
-make_server <- function(token = "test-toke-nnnn-9999",
-                        heartbeat_interval = 5,
-                        gc_interval = 60) {
+make_server <- function(
+  token = "test-toke-nnnn-9999",
+  heartbeat_interval = 5,
+  gc_interval = 60
+) {
   new_server_state(
     token = token,
     heartbeat_interval = heartbeat_interval,
@@ -123,7 +124,7 @@ test_that("drain_buffer() leaves an incomplete trailing frame in the buffer", {
   register_connection(s, conn)
   push_bytes(conn, req("auth", params = list(token = s[["token"]])))
   full <- encode_frame(req("ping", id = "p1"))
-  conn[["buffer"]] <- c(conn[["buffer"]], full[1:5])  # truncated
+  conn[["buffer"]] <- c(conn[["buffer"]], full[1:5]) # truncated
 
   before <- length(conn[["buffer"]])
   dispatched <- drain_buffer(conn, s)
@@ -175,10 +176,13 @@ test_that("emit_event_to_session() sends to all attached connections", {
   clear_sessions()
   on.exit(clear_sessions(), add = TRUE)
   s <- make_server()
-  c1 <- captor_conn(); c2 <- captor_conn()
-  register_connection(s, c1); register_connection(s, c2)
+  c1 <- captor_conn()
+  c2 <- captor_conn()
+  register_connection(s, c1)
+  register_connection(s, c2)
   sess <- new_session("x")
-  attach_connection(sess, c1[["id"]]); attach_connection(sess, c2[["id"]])
+  attach_connection(sess, c1[["id"]])
+  attach_connection(sess, c2[["id"]])
 
   ev <- make_event("heartbeat", data = list(ts = "now"))
   sent <- emit_event_to_session(s, sess, ev)
@@ -206,7 +210,8 @@ test_that("emit_event_to_session() drops the failing connection but keeps others
   bad <- new_connection()
   bad[["send_raw"]] <- function(b) stop("nope")
   good <- captor_conn()
-  register_connection(s, bad); register_connection(s, good)
+  register_connection(s, bad)
+  register_connection(s, good)
   sess <- new_session("x")
   attach_connection(sess, bad[["id"]])
   attach_connection(sess, good[["id"]])
@@ -266,11 +271,13 @@ test_that("poll_active_jobs() emits job.failed with the error envelope", {
   attach_connection(sess, conn[["id"]])
 
   job <- new.env(parent = emptyenv())
-  job[["id"]] <- "job-bad"; job[["session_id"]] <- sess[["id"]]
+  job[["id"]] <- "job-bad"
+  job[["session_id"]] <- sess[["id"]]
   job[["status"]] <- "failed"
   job[["error"]] <- list(code = "internal_error", message = "boom")
   job[["progress"]] <- list()
-  job[["submitted_at"]] <- Sys.time(); job[["started_at"]] <- Sys.time()
+  job[["submitted_at"]] <- Sys.time()
+  job[["started_at"]] <- Sys.time()
   job[["completed_at"]] <- Sys.time()
   sess[["jobs"]][["job-bad"]] <- job
 
@@ -286,9 +293,12 @@ test_that("emit_heartbeats() sends one event per session", {
   clear_sessions()
   on.exit(clear_sessions(), add = TRUE)
   s <- make_server()
-  c1 <- captor_conn(); c2 <- captor_conn()
-  register_connection(s, c1); register_connection(s, c2)
-  s1 <- new_session("a"); s2 <- new_session("b")
+  c1 <- captor_conn()
+  c2 <- captor_conn()
+  register_connection(s, c1)
+  register_connection(s, c2)
+  s1 <- new_session("a")
+  s2 <- new_session("b")
   attach_connection(s1, c1[["id"]])
   attach_connection(s2, c2[["id"]])
 
@@ -322,7 +332,7 @@ test_that("gc_tick() returns dropped session ids and updates last_gc", {
   on.exit(clear_sessions(), add = TRUE)
   s <- make_server()
   sess <- new_session("old")
-  sess[["last_seen"]] <- Sys.time() - 1e6   # very old, no connections
+  sess[["last_seen"]] <- Sys.time() - 1e6 # very old, no connections
   s[["session_ttl"]] <- 60
   s[["data_ttl"]] <- 60
   before <- s[["last_gc"]]
