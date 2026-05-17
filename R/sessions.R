@@ -1,5 +1,3 @@
-# rtemislive_sessions.R
-# ::rtemis::
 # 2026- EDG rtemis.org
 
 # Session registry and lifecycle for rtemislive. See specs/rtemislive.md paragraph 5.

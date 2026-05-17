@@ -24,6 +24,19 @@ that can be passed the server env (e.g. in integration tests). For a
 server running in the user's foreground R session, just press
 Ctrl-C.
 }
+\examples{
+\dontrun{
+# Start the server on a mirai task so it doesn't block the session.
+task <- mirai::mirai({
+  rtemis.server::serve(port = 5757L, verbosity = 0L)
+})
+
+# ... do work ...
+
+# Signal the server to stop gracefully.
+rtemis.server::shutdown(task$data)
+}
+}
 \author{
 EDG
 }

@@ -1,5 +1,3 @@
-# rtemislive_data.R
-# ::rtemis::
 # 2026- EDG rtemis.org
 
 # Data-handle store and Arrow upload assembly for rtemislive. See

@@ -1,5 +1,3 @@
-# rtemislive_frame.R
-# ::rtemis::
 # 2026- EDG rtemis.org
 
 # Wire frame encode/decode for the rtemislive WebSocket protocol.

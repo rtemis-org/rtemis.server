@@ -1,5 +1,3 @@
-# serve.R
-# ::rtemis::
 # 2026- EDG rtemis.org
 
 # Public entry point for the rtemislive backend.

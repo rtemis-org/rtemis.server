@@ -1,5 +1,3 @@
-# rtemislive_progress.R
-# ::rtemis::
 # 2026- EDG rtemis.org
 
 # Progress channel for rtemislive. See specs/rtemislive.md paragraph 9.

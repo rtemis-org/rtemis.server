@@ -1,5 +1,3 @@
-# rtemislive_auth.R
-# ::rtemis::
 # 2026- EDG rtemis.org
 
 # Authentication and origin checking for the rtemislive WebSocket server.

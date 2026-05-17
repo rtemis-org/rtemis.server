@@ -1,5 +1,3 @@
-# rtemislive_jobs.R
-# ::rtemis::
 # 2026- EDG rtemis.org
 
 # Job store and mirai integration for rtemislive. See specs/rtemislive.md

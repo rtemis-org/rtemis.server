@@ -1,5 +1,3 @@
-# rtemislive_serial.R
-# ::rtemis::
 # 2026- EDG rtemis.org
 
 # Arrow IPC encoders for `job.result` payloads. Pairs with

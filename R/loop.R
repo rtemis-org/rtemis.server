@@ -1,5 +1,3 @@
-# rtemislive_loop.R
-# ::rtemis::
 # 2026- EDG rtemis.org
 
 # Host event loop for rtemislive. See specs/rtemislive.md paragraph 13.

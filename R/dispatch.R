@@ -1,5 +1,3 @@
-# rtemislive_dispatch.R
-# ::rtemis::
 # 2026- EDG rtemis.org
 
 # Method dispatch table and request handlers for rtemislive. See
