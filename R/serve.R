@@ -316,6 +316,19 @@ serve <- function(
 #'
 #' @author EDG
 #' @export
+#'
+#' @examples
+#' \dontrun{
+#' # Start the server on a mirai task so it doesn't block the session.
+#' task <- mirai::mirai({
+#'   rtemis.server::serve(port = 5757L, verbosity = 0L)
+#' })
+#'
+#' # ... do work ...
+#'
+#' # Signal the server to stop gracefully.
+#' rtemis.server::shutdown(task$data)
+#' }
 shutdown <- function(server) {
   if (!is.environment(server)) {
     cli::cli_abort("`server` must be the env returned by `serve()`.")
