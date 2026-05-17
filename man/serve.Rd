@@ -7,7 +7,7 @@
 serve(
   port = NULL,
   host = "127.0.0.1",
-  n_daemons = NULL,
+  n_daemons = 1L,
   origins = NULL,
   token = NULL,
   heartbeat_interval = 5,
@@ -15,45 +15,50 @@ serve(
   data_ttl = 3600,
   gc_interval = 60,
   tick_ms = 50L,
-  max_concurrent = 8L,
+  max_concurrent = n_daemons,
   max_sessions = 16L,
   verbosity = 1L
 )
 }
 \arguments{
-\item{port}{Integer. TCP port to listen on. Must be in \code{1024:49151}.
+\item{port}{Integer: TCP port to listen on. Must be in \code{1024:49151}.
 Defaults to \code{5757}, or the value of \code{RTEMISLIVE_PORT} if set.}
 
-\item{host}{Character. Bind address. Defaults to \code{"127.0.0.1"}.
+\item{host}{Character: Bind address. Defaults to \code{"127.0.0.1"}.
 Server refuses to start on any other address.}
 
-\item{n_daemons}{Integer or \code{NULL}. Number of mirai daemons to spin
-up. \code{NULL} auto-selects \code{parallel::detectCores() - 2L} (min 1).}
+\item{n_daemons}{Integer: Number of mirai worker processes. Default
+\code{1L}: rtemis training jobs already parallelise internally (OpenMP
+for gradient boosters, parallel tuning, parallel outer resampling),
+so a single daemon runs one job at a time with full core access.
+Increase only when you want multiple simultaneous jobs and accept
+that each gets a fraction of the cores.}
 
-\item{origins}{Character vector or \code{NULL}. Allowed \code{Origin} headers
+\item{origins}{Optional character vector: Allowed \code{Origin} headers
 on the WS upgrade. \code{NULL} uses the spec defaults
 (\code{live.rtemis.org}, \code{draw.rtemis.org}, \code{localhost:3000}, etc.).}
 
-\item{token}{Character scalar or \code{NULL}. Auth token clients must
+\item{token}{Optional character scalar: Auth token clients must
 present. \code{NULL} generates a fresh 8-byte random token.}
 
-\item{heartbeat_interval}{Numeric, seconds. Heartbeat tick rate.}
+\item{heartbeat_interval}{Numeric, seconds: Heartbeat tick rate.}
 
-\item{session_ttl}{Numeric, seconds. Idle-session GC TTL.}
+\item{session_ttl}{Numeric, seconds: Idle-session GC TTL.}
 
-\item{data_ttl}{Numeric, seconds. Idle-data-handle GC TTL.}
+\item{data_ttl}{Numeric, seconds: Idle-data-handle GC TTL.}
 
-\item{gc_interval}{Numeric, seconds. How often GC runs.}
+\item{gc_interval}{Numeric, seconds: How often GC runs.}
 
-\item{tick_ms}{Integer milliseconds. Background tick rate for the
+\item{tick_ms}{Integer milliseconds: Background tick rate for the
 non-WS periodic work scheduled via \code{later}. Default \code{50}.}
 
-\item{max_concurrent}{Integer. Cap on concurrent jobs across all
-sessions.}
+\item{max_concurrent}{Integer: Cap on concurrent jobs across all
+sessions. Defaults to \code{n_daemons}: no point queuing more running
+jobs than there are workers.}
 
-\item{max_sessions}{Integer. Cap on the number of sessions.}
+\item{max_sessions}{Integer: Cap on the number of sessions.}
 
-\item{verbosity}{Integer. \verb{>= 1L} prints the startup banner.}
+\item{verbosity}{Integer: \verb{>= 1L} prints the startup banner.}
 }
 \value{
 Server env, invisibly. Returned after the loop exits so
@@ -76,7 +81,7 @@ protocol and architectural details.
 # Run on the default port; Ctrl-C to stop.
 serve()
 
-# Pin daemons, origins, and a known token.
+# Multiple workers for a multi-user setup (each job gets fewer cores).
 serve(
   port = 5757L,
   n_daemons = 4L,

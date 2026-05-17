@@ -70,8 +70,8 @@ new_job_id <- function() {
 #' @param params List. Original wire params, retained for inspection.
 #' @param expr Quoted expression. Body of the mirai task.
 #' @param env Named list. Variables to inject into the mirai task.
-#' @param max_concurrent Integer. Server-wide cap on concurrent jobs
-#'   (default 8, spec paragraph 11.4). Counted across all sessions.
+#' @param max_concurrent Integer. Server-wide cap on concurrent jobs.
+#'   Counted across all sessions. Passed down from `server$max_concurrent`.
 #'
 #' @return Job env.
 #'

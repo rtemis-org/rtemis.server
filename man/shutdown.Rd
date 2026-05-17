@@ -7,8 +7,7 @@
 shutdown(server)
 }
 \arguments{
-\item{server}{Server env returned (or shared) from
-\code{\link[=serve]{serve()}}.}
+\item{server}{Server env returned (or shared) from \code{\link[=serve]{serve()}}.}
 }
 \value{
 \code{NULL}, invisibly.

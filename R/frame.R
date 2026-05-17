@@ -37,10 +37,10 @@
 #' header automatically (`list(format = "arrow-ipc", bytes = N)`). Any
 #' `payload` field already present in `header` is overwritten.
 #'
-#' @param header Named list. The frame envelope (request / response / event).
+#' @param header Named list: The frame envelope (request / response / event).
 #'   Must include a `v` field; if missing, defaults to the current protocol
 #'   version.
-#' @param payload Raw vector or `NULL`. Optional binary blob (typically
+#' @param payload Optional raw vector: Optional binary blob (typically
 #'   Arrow IPC bytes).
 #'
 #' @return Raw vector - the complete on-the-wire frame.
@@ -123,7 +123,7 @@ encode_frame <- function(header, payload = NULL) {
 #' limits). Truncation alone is not an error - it just means more bytes
 #' are needed.
 #'
-#' @param buf Raw vector. The current connection buffer.
+#' @param buf Raw vector: The current connection buffer.
 #'
 #' @return Named list:
 #'
@@ -244,8 +244,8 @@ decode_frame <- function(buf) {
 #' Convenience helper for handlers - produces a well-formed response
 #' envelope that pairs with a request's `id`.
 #'
-#' @param id Character. Correlation id from the request.
-#' @param result List or NULL. Response payload (success path).
+#' @param id Character: Correlation id from the request.
+#' @param Optional result List: Response payload (success path).
 #'
 #' @return Named list ready to pass to `encode_frame()`.
 #'
@@ -265,11 +265,11 @@ make_response <- function(id, result = NULL) {
 # %% make_error ----
 #' Build an error response header
 #'
-#' @param id Character. Correlation id from the request, or `NA` when no
+#' @param id Character: Correlation id from the request, or `NA` when no
 #'   id was extractable (e.g. malformed frame).
-#' @param code Character. One of the error codes in spec paragraph 15.
-#' @param message Character. Human-readable description.
-#' @param details List or NULL. Optional structured details.
+#' @param code Character: One of the error codes in spec paragraph 15.
+#' @param message Character: Human-readable description.
+#' @param details List or NULL: Optional structured details.
 #'
 #' @return Named list ready to pass to `encode_frame()`.
 #'
@@ -293,8 +293,8 @@ make_error <- function(id, code, message, details = NULL) {
 # %% make_event ----
 #' Build a server-pushed event header
 #'
-#' @param event Character. Event name (see spec paragraph 8 for the catalog).
-#' @param data List or NULL. Event-specific payload.
+#' @param event Character: Event name (see spec paragraph 8 for the catalog).
+#' @param data List or NULL: Event-specific payload.
 #'
 #' @return Named list ready to pass to `encode_frame()`.
 #'

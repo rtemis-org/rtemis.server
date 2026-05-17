@@ -34,27 +34,32 @@
 #' `server$stop_requested`. See `specs/rtemislive.md` for the wire
 #' protocol and architectural details.
 #'
-#' @param port Integer. TCP port to listen on. Must be in `1024:49151`.
+#' @param port Integer: TCP port to listen on. Must be in `1024:49151`.
 #'   Defaults to `5757`, or the value of `RTEMISLIVE_PORT` if set.
-#' @param host Character. Bind address. Defaults to `"127.0.0.1"`.
+#' @param host Character: Bind address. Defaults to `"127.0.0.1"`.
 #'   Server refuses to start on any other address.
-#' @param n_daemons Integer or `NULL`. Number of mirai daemons to spin
-#'   up. `NULL` auto-selects `parallel::detectCores() - 2L` (min 1).
-#' @param origins Character vector or `NULL`. Allowed `Origin` headers
+#' @param n_daemons Integer: Number of mirai worker processes. Default
+#'   `1L`: rtemis training jobs already parallelise internally (OpenMP
+#'   for gradient boosters, parallel tuning, parallel outer resampling),
+#'   so a single daemon runs one job at a time with full core access.
+#'   Increase only when you want multiple simultaneous jobs and accept
+#'   that each gets a fraction of the cores.
+#' @param origins Optional character vector: Allowed `Origin` headers
 #'   on the WS upgrade. `NULL` uses the spec defaults
 #'   (`live.rtemis.org`, `draw.rtemis.org`, `localhost:3000`, etc.).
-#' @param token Character scalar or `NULL`. Auth token clients must
+#' @param token Optional character scalar: Auth token clients must
 #'   present. `NULL` generates a fresh 8-byte random token.
-#' @param heartbeat_interval Numeric, seconds. Heartbeat tick rate.
-#' @param session_ttl Numeric, seconds. Idle-session GC TTL.
-#' @param data_ttl Numeric, seconds. Idle-data-handle GC TTL.
-#' @param gc_interval Numeric, seconds. How often GC runs.
-#' @param tick_ms Integer milliseconds. Background tick rate for the
+#' @param heartbeat_interval Numeric, seconds: Heartbeat tick rate.
+#' @param session_ttl Numeric, seconds: Idle-session GC TTL.
+#' @param data_ttl Numeric, seconds: Idle-data-handle GC TTL.
+#' @param gc_interval Numeric, seconds: How often GC runs.
+#' @param tick_ms Integer milliseconds: Background tick rate for the
 #'   non-WS periodic work scheduled via `later`. Default `50`.
-#' @param max_concurrent Integer. Cap on concurrent jobs across all
-#'   sessions.
-#' @param max_sessions Integer. Cap on the number of sessions.
-#' @param verbosity Integer. `>= 1L` prints the startup banner.
+#' @param max_concurrent Integer: Cap on concurrent jobs across all
+#'   sessions. Defaults to `n_daemons`: no point queuing more running
+#'   jobs than there are workers.
+#' @param max_sessions Integer: Cap on the number of sessions.
+#' @param verbosity Integer: `>= 1L` prints the startup banner.
 #'
 #' @return Server env, invisibly. Returned after the loop exits so
 #'   callers (notably tests running the server on a mirai task) can
@@ -70,7 +75,7 @@
 #' # Run on the default port; Ctrl-C to stop.
 #' serve()
 #'
-#' # Pin daemons, origins, and a known token.
+#' # Multiple workers for a multi-user setup (each job gets fewer cores).
 #' serve(
 #'   port = 5757L,
 #'   n_daemons = 4L,
@@ -81,7 +86,7 @@
 serve <- function(
   port = NULL,
   host = "127.0.0.1",
-  n_daemons = NULL,
+  n_daemons = 1L,
   origins = NULL,
   token = NULL,
   heartbeat_interval = 5,
@@ -89,7 +94,7 @@ serve <- function(
   data_ttl = 3600,
   gc_interval = 60,
   tick_ms = 50L,
-  max_concurrent = 8L,
+  max_concurrent = n_daemons,
   max_sessions = 16L,
   verbosity = 1L
 ) {
@@ -124,9 +129,6 @@ serve <- function(
     token <- generate_token()
   } else if (!is.character(token) || length(token) != 1L || !nzchar(token)) {
     cli::cli_abort("`token` must be a single non-empty character string.")
-  }
-  if (is.null(n_daemons)) {
-    n_daemons <- max(parallel::detectCores() - 2L, 1L)
   }
   n_daemons <- as.integer(n_daemons)
   if (is.na(n_daemons) || n_daemons < 1L) {
@@ -307,8 +309,7 @@ serve <- function(
 #' server running in the user's foreground R session, just press
 #' Ctrl-C.
 #'
-#' @param server Server env returned (or shared) from
-#'   [serve()].
+#' @param server Server env returned (or shared) from [serve()].
 #'
 #' @return `NULL`, invisibly.
 #'
