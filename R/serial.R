@@ -15,7 +15,7 @@
 #' full datasets, etc.). The byte stream is what `arrow::read_ipc_stream()`
 #' / `arrow.js` / DuckDB-WASM accept directly.
 #'
-#' @param df data.frame, data.table, or `arrow::Table`. Anything coercible
+#' @param df data.frame, data.table, or `arrow::Table` - Anything coercible
 #'   to an Arrow Table via [arrow::arrow_table()].
 #'
 #' @return Raw vector - Arrow IPC stream bytes.
@@ -52,8 +52,8 @@ encode_arrow_ipc <- function(df) {
 #' tidy, browser-friendly shape that DuckDB-WASM can query without
 #' reshape.
 #'
-#' @param sup A `Supervised` (Regression / Classification / SurvivalRes,
-#'   etc.). For non-Supervised inputs this throws - `job.result` callers
+#' @param sup `Supervised` object (Regression / Classification / SurvivalRes,
+#'   etc.). For non-Supervised inputs this errors - `job.result` callers
 #'   should switch on `inherits` first.
 #'
 #' @return `data.table` (zero rows is possible if no split has data).
@@ -181,9 +181,9 @@ varimp_table <- function(sup) {
 #' detects the wrapped form by the absence of `v` at the top level (see
 #' `process_connection()` in `rtemislive_loop.R`).
 #'
-#' @param id Character. Request correlation id.
-#' @param result List or NULL. Response JSON body.
-#' @param payload Raw vector. Binary blob to attach.
+#' @param id Character: Request correlation id.
+#' @param result Optional list: Response JSON body.
+#' @param payload Raw vector: Binary blob to attach.
 #'
 #' @return `list(header, payload)`.
 #'

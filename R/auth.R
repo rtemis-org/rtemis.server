@@ -118,7 +118,7 @@ check_origin <- function(
 #' Strips trailing slashes and whitespace. Validates that each entry is a
 #' single non-empty string. Throws on malformed input.
 #'
-#' @param origins Character vector or NULL.
+#' @param origins Optional character vector.
 #'
 #' @return Character vector (possibly the spec defaults if `origins` was
 #' NULL).

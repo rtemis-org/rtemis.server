@@ -219,11 +219,11 @@ get_session <- function(key) {
 
 #' Create and register a new session
 #'
-#' @param name Character scalar or `NULL`. When `NULL`, an `untitled-<n>`
+#' @param name Optional character scalar. When `NULL`, an `untitled-<n>`
 #'   name is generated.
-#' @param max_buffer Integer. Capacity of the unsent-event ring buffer
+#' @param max_buffer Integer: Capacity of the unsent-event ring buffer
 #'   (default 256, spec paragraph 5.8).
-#' @param max_sessions Integer. Cap on total sessions in the registry
+#' @param max_sessions Integer: Cap on total sessions in the registry
 #'   (default 16, spec paragraph 11.4).
 #'
 #' @return Session env.
@@ -293,7 +293,7 @@ touch_session <- function(session) {
 
 #' Delete a session
 #'
-#' @param id Character scalar. Session id.
+#' @param id Character scalar: Session id.
 #'
 #' @return Logical - `TRUE` if a session was removed, `FALSE` if it
 #'   didn't exist.
@@ -346,8 +346,8 @@ rename_session <- function(session, new_name) {
 #' **and** `last_seen` is older than `ttl` seconds. Active sessions are
 #' never collected (their jobs may still be running).
 #'
-#' @param now POSIXct. Reference time (default `Sys.time()`).
-#' @param ttl Numeric, seconds. Default 86400 (24 h, spec paragraph 5.7).
+#' @param now POSIXct: Reference time (default `Sys.time()`).
+#' @param ttl Numeric, seconds: Default 86400 (24 h, spec paragraph 5.7).
 #'
 #' @return Character vector of ids that were collected.
 #'

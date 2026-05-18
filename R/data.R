@@ -275,7 +275,7 @@ chunk_upload <- function(session, upload_id, chunk_index, bytes) {
 #'
 #' @param session Session env.
 #' @param upload_id Character scalar.
-#' @param max_handles Integer. Per-session data_handle cap.
+#' @param max_handles Integer: Per-session data_handle cap.
 #'
 #' @return Named list - wire-shaped data_handle summary.
 #'
@@ -537,7 +537,7 @@ describe_col_summary <- function(x) {
 #'
 #' @param session Session env.
 #' @param now POSIXct.
-#' @param ttl Numeric, seconds. Default 3600 (spec paragraph 6.3).
+#' @param ttl Numeric, seconds. (spec paragraph 6.3).
 #'
 #' @return Character vector of handles dropped.
 #'
