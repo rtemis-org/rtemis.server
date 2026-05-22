@@ -106,7 +106,7 @@ encode_frame <- function(header, payload = NULL) {
   } else {
     c(len_raw, json_bytes, payload)
   }
-} # /rtemis::encode_frame
+}
 
 
 # %% decode_frame ----
@@ -235,7 +235,7 @@ decode_frame <- function(buf) {
     payload = payload,
     consumed = total
   )
-} # /rtemis::decode_frame
+}
 
 
 # %% make_response ----
@@ -259,7 +259,7 @@ make_response <- function(id, result = NULL) {
     ok = TRUE,
     result = result
   )
-} # /rtemis::make_response
+}
 
 
 # %% make_error ----
@@ -287,7 +287,7 @@ make_error <- function(id, code, message, details = NULL) {
     ok = FALSE,
     error = err
   )
-} # /rtemis::make_error
+}
 
 
 # %% make_event ----
@@ -307,4 +307,4 @@ make_event <- function(event, data = NULL) {
     event = event,
     data = data
   )
-} # /rtemis::make_event
+}

@@ -38,7 +38,7 @@
 register_connection <- function(server, conn) {
   server[["connections"]][[conn[["id"]]]] <- conn
   invisible(conn)
-} # /rtemis::register_connection
+}
 
 
 #' Unregister and clean up a connection
@@ -81,7 +81,7 @@ disconnect_connection <- function(server, conn) {
     rm(list = cid, envir = reg)
   }
   invisible(NULL)
-} # /rtemis::disconnect_connection
+}
 
 
 # %% Per-connection I/O -----------------------------------------------------
@@ -128,7 +128,7 @@ read_into_buffer <- function(conn) {
     conn[["buffer"]] <- c(conn[["buffer"]], chunk)
   }
   TRUE
-} # /rtemis::read_into_buffer
+}
 
 
 #' Send a raw response frame on a connection
@@ -166,7 +166,7 @@ write_frame <- function(conn, bytes) {
     return(FALSE)
   }
   TRUE
-} # /rtemis::write_frame
+}
 
 
 #' Parse complete frames out of a connection's buffer and dispatch each
@@ -247,7 +247,7 @@ drain_buffer <- function(conn, server) {
     }
   }
   dispatched
-} # /rtemis::drain_buffer
+}
 
 
 #' One full read+drain pass for a single connection
@@ -269,7 +269,7 @@ process_connection <- function(conn, server) {
     return(0L)
   }
   drain_buffer(conn, server)
-} # /rtemis::process_connection
+}
 
 
 # %% Fan-out to connections -------------------------------------------------
@@ -311,7 +311,7 @@ emit_event_to_session <- function(server, session, event) {
     sent <- sent + 1L
   }
   sent
-} # /rtemis::emit_event_to_session
+}
 
 
 #' Send an event to a specific connection
@@ -333,7 +333,7 @@ emit_event_to_connection <- function(server, conn, event) {
     disconnect_connection(server, conn)
   }
   ok
-} # /rtemis::emit_event_to_connection
+}
 
 
 # %% Progress drain + routing ----------------------------------------------
@@ -365,7 +365,7 @@ drain_and_route_progress <- function(server) {
       emit_event_to_session(server, session, event)
     }
   )
-} # /rtemis::drain_and_route_progress
+}
 
 
 # %% Job resolution polling -------------------------------------------------
@@ -404,7 +404,7 @@ job_resolution_event <- function(job) {
     ),
     NULL
   )
-} # /rtemis::job_resolution_event
+}
 
 
 #' Poll every active job across all sessions
@@ -449,7 +449,7 @@ poll_active_jobs <- function(server) {
     }
   }
   emitted
-} # /rtemis::poll_active_jobs
+}
 
 
 # %% Periodic ticks ---------------------------------------------------------
@@ -482,7 +482,7 @@ emit_heartbeats <- function(server) {
   }
   server[["last_heartbeat"]] <- Sys.time()
   length(ids)
-} # /rtemis::emit_heartbeats
+}
 
 
 #' Run the periodic GC pass: idle sessions + stale data handles
@@ -513,7 +513,7 @@ gc_tick <- function(server) {
     sessions_dropped = sessions_dropped,
     data_handles_dropped = data_dropped
   )
-} # /rtemis::gc_tick
+}
 
 
 #' Run periodic ticks whose intervals have elapsed
@@ -542,7 +542,7 @@ maybe_tick_periodic <- function(server) {
     out[["gc_ran"]] <- TRUE
   }
   out
-} # /rtemis::maybe_tick_periodic
+}
 
 
 # %% Main loop --------------------------------------------------------------
@@ -582,7 +582,7 @@ loop_tick <- function(server) {
     heartbeats_emitted = periodic[["heartbeats_emitted"]],
     gc_ran = periodic[["gc_ran"]]
   )
-} # /rtemis::loop_tick
+}
 
 
 #' Drive the event loop until `server$stop_requested` is set
@@ -601,4 +601,4 @@ run_loop <- function(server, tick_ms = 5) {
     Sys.sleep(tick_ms / 1000)
   }
   invisible(NULL)
-} # /rtemis::run_loop
+}

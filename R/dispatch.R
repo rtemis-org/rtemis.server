@@ -30,7 +30,7 @@ new_connection_id <- function() {
   rtemis.core::check_dependencies("uuid")
   hex <- gsub("-", "", uuid::UUIDgenerate(use.time = TRUE), fixed = TRUE)
   paste0("conn-", substr(hex, 1L, 16L))
-} # /rtemis::new_connection_id
+}
 
 
 #' Create a new connection state object
@@ -60,7 +60,7 @@ new_connection <- function(id = NULL, send_raw = NULL) {
   c_env[["buffer"]] <- raw(0L)
   c_env[["send_raw"]] <- send_raw
   c_env
-} # /rtemis::new_connection
+}
 
 
 #' Update `last_seen` on a connection
@@ -75,7 +75,7 @@ new_connection <- function(id = NULL, send_raw = NULL) {
 touch_connection <- function(conn) {
   conn[["last_seen"]] <- Sys.time()
   invisible(conn)
-} # /rtemis::touch_connection
+}
 
 
 #' Get the session a connection is currently attached to
@@ -93,7 +93,7 @@ connection_session <- function(conn) {
     return(NULL)
   }
   get_session_by_id(sid)
-} # /rtemis::connection_session
+}
 
 
 # %% Dispatcher --------------------------------------------------------------
@@ -153,7 +153,7 @@ new_server_state <- function(
   e[["last_gc"]] <- started_at
   e[["stop_requested"]] <- FALSE
   e
-} # /rtemis::new_server_state
+}
 
 
 #' Dispatch a single request frame
@@ -253,7 +253,7 @@ dispatch_request <- function(conn, frame, server) {
       make_error(req_id, "internal_error", conditionMessage(e))
     }
   )
-} # /rtemis::dispatch_request
+}
 
 
 # %% Connection-level handlers ----------------------------------------------
@@ -286,7 +286,7 @@ handle_auth <- function(conn, frame, server) {
   conn[["authed"]] <- TRUE
   conn[["auth_attempts"]] <- 0L
   make_response(req_id, list(connection_id = conn[["id"]]))
-} # /rtemis::handle_auth
+}
 
 
 #' `ping` handler
@@ -299,7 +299,7 @@ handle_auth <- function(conn, frame, server) {
 handle_ping <- function(conn, frame, server) {
   req_id <- frame[["header"]][["id"]] %||% NA_character_
   make_response(req_id, list(ts = iso8601(Sys.time())))
-} # /rtemis::handle_ping
+}
 
 
 #' `info` handler
@@ -332,7 +332,7 @@ handle_info <- function(conn, frame, server) {
       n_jobs_running = count_active_jobs()
     )
   )
-} # /rtemis::handle_info
+}
 
 
 #' Return the current mirai daemon count, or 0 if mirai isn't loaded
@@ -356,7 +356,7 @@ daemon_count <- function() {
     return(nrow(d))
   }
   length(d)
-} # /rtemis::daemon_count
+}
 
 
 #' `algorithms` handler
@@ -385,7 +385,7 @@ handle_algorithms <- function(conn, frame, server) {
     )
   })
   make_response(req_id, list(algorithms = algorithms))
-} # /rtemis::handle_algorithms
+}
 
 
 # Type-name from a default value. NULL becomes "null" (which the UI
@@ -557,7 +557,7 @@ handle_algorithm_describe <- function(conn, frame, server) {
       hyperparameters = hyperparameters
     )
   )
-} # /rtemis::handle_algorithm_describe
+}
 
 
 #' `resampler.describe` handler
@@ -578,7 +578,7 @@ handle_resampler_describe <- function(conn, frame, server) {
   req_id <- frame[["header"]][["id"]] %||% NA_character_
   parameters <- .live_build_schema(setup_Resampler)
   make_response(req_id, list(parameters = parameters))
-} # /rtemis::handle_resampler_describe
+}
 
 
 # %% Session-level handlers --------------------------------------------------
@@ -591,7 +591,7 @@ handle_resampler_describe <- function(conn, frame, server) {
 handle_session_list <- function(conn, frame, server) {
   req_id <- frame[["header"]][["id"]] %||% NA_character_
   make_response(req_id, list(sessions = list_sessions()))
-} # /rtemis::handle_session_list
+}
 
 
 #' `session.create` handler
@@ -610,7 +610,7 @@ handle_session_create <- function(conn, frame, server) {
   attach_connection(s, conn[["id"]])
   conn[["session_id"]] <- s[["id"]]
   make_response(req_id, session_snapshot(s))
-} # /rtemis::handle_session_create
+}
 
 
 #' `session.join` handler
@@ -640,7 +640,7 @@ handle_session_join <- function(conn, frame, server) {
   attach_connection(s, conn[["id"]])
   conn[["session_id"]] <- s[["id"]]
   make_response(req_id, session_snapshot(s))
-} # /rtemis::handle_session_join
+}
 
 
 #' `session.detach` handler
@@ -656,7 +656,7 @@ handle_session_detach <- function(conn, frame, server) {
   }
   conn[["session_id"]] <- NULL
   make_response(req_id, list(detached = TRUE))
-} # /rtemis::handle_session_detach
+}
 
 
 #' `session.rename` handler
@@ -683,7 +683,7 @@ handle_session_rename <- function(conn, frame, server) {
   }
   rename_session(s, new_name)
   make_response(req_id, list(session_id = s[["id"]], name = s[["name"]]))
-} # /rtemis::handle_session_rename
+}
 
 
 #' `session.delete` handler
@@ -706,7 +706,7 @@ handle_session_delete <- function(conn, frame, server) {
   delete_session(sid)
   conn[["session_id"]] <- NULL
   make_response(req_id, list(deleted = TRUE, session_id = sid))
-} # /rtemis::handle_session_delete
+}
 
 
 #' `session.info` handler
@@ -724,7 +724,7 @@ handle_session_info <- function(conn, frame, server) {
     )
   }
   make_response(req_id, session_snapshot(s))
-} # /rtemis::handle_session_info
+}
 
 
 # %% Data handlers ----------------------------------------------------------
@@ -756,7 +756,7 @@ handle_data_upload <- function(conn, frame, server) {
   s <- connection_session(conn)
   summary <- new_data_handle(s, name = name, bytes = payload)
   make_response(req_id, summary)
-} # /rtemis::handle_data_upload
+}
 
 
 #' `data.upload.begin` handler
@@ -785,7 +785,7 @@ handle_data_upload_begin <- function(conn, frame, server) {
     n_chunks = params[["n_chunks"]]
   )
   make_response(req_id, list(upload_id = upload_id))
-} # /rtemis::handle_data_upload_begin
+}
 
 
 #' `data.upload.chunk` handler
@@ -819,7 +819,7 @@ handle_data_upload_chunk <- function(conn, frame, server) {
     bytes = payload
   )
   make_response(req_id, progress)
-} # /rtemis::handle_data_upload_chunk
+}
 
 
 #' `data.upload.end` handler
@@ -840,7 +840,7 @@ handle_data_upload_end <- function(conn, frame, server) {
   s <- connection_session(conn)
   summary <- end_upload(s, upload_id)
   make_response(req_id, summary)
-} # /rtemis::handle_data_upload_end
+}
 
 
 #' `data.upload.cancel` handler
@@ -861,7 +861,7 @@ handle_data_upload_cancel <- function(conn, frame, server) {
   s <- connection_session(conn)
   cancelled <- cancel_upload(s, upload_id)
   make_response(req_id, list(cancelled = cancelled))
-} # /rtemis::handle_data_upload_cancel
+}
 
 
 #' `data.list` handler
@@ -873,7 +873,7 @@ handle_data_list <- function(conn, frame, server) {
   req_id <- frame[["header"]][["id"]] %||% NA_character_
   s <- connection_session(conn)
   make_response(req_id, list(handles = list_data_handles(s)))
-} # /rtemis::handle_data_list
+}
 
 
 #' `data.describe` handler
@@ -893,7 +893,7 @@ handle_data_describe <- function(conn, frame, server) {
   }
   s <- connection_session(conn)
   make_response(req_id, describe_data(s, handle))
-} # /rtemis::handle_data_describe
+}
 
 
 #' `data.delete` handler
@@ -914,7 +914,7 @@ handle_data_delete <- function(conn, frame, server) {
   s <- connection_session(conn)
   deleted <- delete_data(s, handle)
   make_response(req_id, list(deleted = deleted))
-} # /rtemis::handle_data_delete
+}
 
 
 # %% Job handlers ------------------------------------------------------------
@@ -1042,7 +1042,7 @@ handle_train <- function(conn, frame, server) {
   )
 
   make_response(req_id, list(job_id = job[["id"]]))
-} # /rtemis::handle_train
+}
 
 
 #' `job.list` handler
@@ -1054,7 +1054,7 @@ handle_job_list <- function(conn, frame, server) {
   req_id <- frame[["header"]][["id"]] %||% NA_character_
   s <- connection_session(conn)
   make_response(req_id, list(jobs = list_jobs(s)))
-} # /rtemis::handle_job_list
+}
 
 
 #' `job.status` handler
@@ -1081,7 +1081,7 @@ handle_job_status <- function(conn, frame, server) {
     )
   }
   make_response(req_id, job_summary(job))
-} # /rtemis::handle_job_status
+}
 
 
 #' `job.cancel` handler
@@ -1102,7 +1102,7 @@ handle_job_cancel <- function(conn, frame, server) {
   s <- connection_session(conn)
   cancelled <- cancel_job(s, job_id)
   make_response(req_id, list(cancelled = cancelled))
-} # /rtemis::handle_job_cancel
+}
 
 
 #' `job.result` handler
@@ -1227,7 +1227,7 @@ handle_job_result <- function(conn, frame, server) {
     ),
     class = "rtemislive_invalid_params"
   )
-} # /rtemis::handle_job_result
+}
 
 
 #' `job.delete` handler
@@ -1248,7 +1248,7 @@ handle_job_delete <- function(conn, frame, server) {
   s <- connection_session(conn)
   deleted <- delete_job(s, job_id)
   make_response(req_id, list(deleted = deleted))
-} # /rtemis::handle_job_delete
+}
 
 
 # %% Method table ------------------------------------------------------------

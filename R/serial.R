@@ -36,7 +36,7 @@ encode_arrow_ipc <- function(df) {
   )
   buf <- arrow::write_to_raw(tbl, format = "stream")
   as.raw(buf)
-} # /rtemis::encode_arrow_ipc
+}
 
 
 # %% Predictions table -------------------------------------------------------
@@ -138,7 +138,7 @@ predictions_table <- function(sup) {
     ))
   }
   data.table::rbindlist(pieces, fill = TRUE, use.names = TRUE)
-} # /rtemis::predictions_table
+}
 
 
 # %% Variable importance table ----------------------------------------------
@@ -168,7 +168,7 @@ varimp_table <- function(sup) {
     return(prop(vi, "data"))
   }
   NULL
-} # /rtemis::varimp_table
+}
 
 
 # %% Response-with-payload helper -------------------------------------------
@@ -198,7 +198,7 @@ make_response_payload <- function(id, result, payload) {
     header = make_response(id, result),
     payload = payload
   )
-} # /rtemis::make_response_payload
+}
 
 
 # %% summary_json -----------------------------------------------------------
@@ -247,4 +247,4 @@ summary_json <- function(result) {
     }
   }
   out
-} # /rtemis::summary_json
+}

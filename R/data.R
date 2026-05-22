@@ -33,7 +33,7 @@ new_data_handle_id <- function() {
   rtemis.core::check_dependencies("uuid")
   hex <- gsub("-", "", uuid::UUIDgenerate(use.time = TRUE), fixed = TRUE)
   paste0("data-", substr(hex, 1L, 16L))
-} # /rtemis::new_data_handle_id
+}
 
 
 #' Generate an upload_id (for chunked uploads in progress)
@@ -47,7 +47,7 @@ new_upload_id <- function() {
   rtemis.core::check_dependencies("uuid")
   hex <- gsub("-", "", uuid::UUIDgenerate(use.time = TRUE), fixed = TRUE)
   paste0("upload-", substr(hex, 1L, 16L))
-} # /rtemis::new_upload_id
+}
 
 
 # %% Arrow IPC decoding ------------------------------------------------------
@@ -92,7 +92,7 @@ decode_arrow_ipc <- function(bytes) {
     names(.SD) := lapply(.SD, as.factor),
     .SDcols = sapply(x, is.character)
   ]
-} # /rtemis::decode_arrow_ipc
+}
 
 
 # %% Single-frame upload -----------------------------------------------------
@@ -141,7 +141,7 @@ new_data_handle <- function(session, name, bytes, max_handles = 16L) {
   touch_session(session)
 
   data_handle_summary(h)
-} # /rtemis::new_data_handle
+}
 
 
 # %% Chunked upload assembly -------------------------------------------------
@@ -162,7 +162,7 @@ pending_uploads <- function(session) {
     session[["pending_uploads"]] <- pu
   }
   pu
-} # /rtemis::pending_uploads
+}
 
 
 #' Begin a chunked upload
@@ -208,7 +208,7 @@ begin_upload <- function(session, name, total_bytes, n_chunks) {
   pu[[u[["upload_id"]]]] <- u
   touch_session(session)
   u[["upload_id"]]
-} # /rtemis::begin_upload
+}
 
 
 #' Receive a chunk of an in-progress upload
@@ -264,7 +264,7 @@ chunk_upload <- function(session, upload_id, chunk_index, bytes) {
     received_bytes = u[["received_bytes"]],
     total_bytes = u[["total_bytes"]]
   )
-} # /rtemis::chunk_upload
+}
 
 
 #' Finalize a chunked upload
@@ -314,7 +314,7 @@ end_upload <- function(session, upload_id, max_handles = 16L) {
 
   bytes <- do.call(c, u[["chunks"]])
   new_data_handle(session, u[["name"]], bytes, max_handles = max_handles)
-} # /rtemis::end_upload
+}
 
 
 #' Cancel an in-progress chunked upload
@@ -337,7 +337,7 @@ cancel_upload <- function(session, upload_id) {
   rm(list = upload_id, envir = pu)
   touch_session(session)
   TRUE
-} # /rtemis::cancel_upload
+}
 
 
 # %% Lookup / list / delete --------------------------------------------------
@@ -365,7 +365,7 @@ get_data <- function(session, handle) {
   h[["last_used"]] <- Sys.time()
   touch_session(session)
   h[["data"]]
-} # /rtemis::get_data
+}
 
 
 #' Summarize a single data_handle (used in responses)
@@ -384,7 +384,7 @@ data_handle_summary <- function(h) {
     rows = h[["rows"]],
     cols = h[["cols"]]
   )
-} # /rtemis::data_handle_summary
+}
 
 
 #' List all data_handles in a session
@@ -401,7 +401,7 @@ list_data_handles <- function(session) {
   lapply(ls(data_env), function(handle) {
     data_handle_summary(data_env[[handle]])
   })
-} # /rtemis::list_data_handles
+}
 
 
 #' Delete a data_handle
@@ -426,7 +426,7 @@ delete_data <- function(session, handle) {
   rm(list = handle, envir = data_env)
   touch_session(session)
   TRUE
-} # /rtemis::delete_data
+}
 
 
 # %% Describe ---------------------------------------------------------------
@@ -463,7 +463,7 @@ describe_data <- function(session, handle) {
     cols = ncol(dt),
     columns = cols
   )
-} # /rtemis::describe_data
+}
 
 
 #' Compact type label for a column
@@ -494,7 +494,7 @@ describe_col_type <- function(x) {
     return("datetime")
   }
   paste(class(x), collapse = "/")
-} # /rtemis::describe_col_type
+}
 
 
 #' Per-column summary (range for numerics, top values otherwise)
@@ -526,7 +526,7 @@ describe_col_summary <- function(x) {
   } else {
     NULL
   }
-} # /rtemis::describe_col_summary
+}
 
 
 # %% GC ----------------------------------------------------------------------
@@ -557,4 +557,4 @@ gc_data <- function(session, now = Sys.time(), ttl = 3600) {
     rm(list = handle, envir = data_env)
   }
   expired
-} # /rtemis::gc_data
+}

@@ -31,7 +31,7 @@
 #' @noRd
 default_progress_url <- function() {
   paste0("ipc://", tempfile(pattern = "rtemislive-progress-"))
-} # /rtemis::default_progress_url
+}
 
 
 # %% Host-side: bind / close / drain -----------------------------------------
@@ -56,7 +56,7 @@ bind_progress_socket <- function(url) {
     cli::cli_abort("`url` must be a single non-empty character string.")
   }
   nanonext::socket("pull", listen = url)
-} # /rtemis::bind_progress_socket
+}
 
 
 #' Close a progress socket
@@ -79,7 +79,7 @@ close_progress_socket <- function(sock) {
     error = function(e) NULL
   )
   invisible(NULL)
-} # /rtemis::close_progress_socket
+}
 
 
 #' Non-blocking drain of all pending progress messages
@@ -118,7 +118,7 @@ drain_progress_socket <- function(sock) {
     }
   }
   out
-} # /rtemis::drain_progress_socket
+}
 
 
 # %% Routing -----------------------------------------------------------------
@@ -152,7 +152,7 @@ find_session_for_job <- function(job_id) {
     }
   }
   NULL
-} # /rtemis::find_session_for_job
+}
 
 
 #' Route a list of progress envelopes to their sessions
@@ -216,7 +216,7 @@ route_progress <- function(messages, send_event = NULL) {
     routed <- routed + 1L
   }
   routed
-} # /rtemis::route_progress
+}
 
 
 # %% Daemon-side setup -------------------------------------------------------
@@ -296,4 +296,4 @@ init_daemon_progress <- function(url) {
     }),
     url = url
   )
-} # /rtemis::init_daemon_progress
+}

@@ -32,7 +32,7 @@ generate_token <- function() {
   hex <- paste0(sprintf("%02x", as.integer(bytes)), collapse = "")
   # Group into four 4-char blocks: `xxxx-xxxx-xxxx-xxxx`
   paste(substring(hex, c(1L, 5L, 9L, 13L), c(4L, 8L, 12L, 16L)), collapse = "-")
-} # /rtemis::generate_token
+}
 
 
 # %% check_token ----
@@ -72,7 +72,7 @@ check_token <- function(presented, expected) {
   }
   diff <- as.integer(xor(a, b))
   identical(na, nb) && sum(diff) == 0L
-} # /rtemis::check_token
+}
 
 
 # %% check_origin ----
@@ -109,7 +109,7 @@ check_origin <- function(
     return(FALSE)
   }
   origin %in% allowed_origins
-} # /rtemis::check_origin
+}
 
 
 # %% normalize_origins ----
@@ -137,4 +137,4 @@ normalize_origins <- function(origins) {
     cli::cli_abort("`origins` must not contain NA or empty strings.")
   }
   sub("/+$", "", trimws(origins))
-} # /rtemis::normalize_origins
+}

@@ -48,7 +48,7 @@ session_registry <- function() {
     live[["rtemislive_sessions"]] <- reg
   }
   reg
-} # /rtemis::session_registry
+}
 
 
 #' Clear the session registry
@@ -64,7 +64,7 @@ clear_sessions <- function() {
   reg <- session_registry()
   rm(list = ls(reg, all.names = TRUE), envir = reg)
   invisible(NULL)
-} # /rtemis::clear_sessions
+}
 
 
 # %% Identifier helpers ------------------------------------------------------
@@ -83,7 +83,7 @@ new_session_id <- function() {
   rtemis.core::check_dependencies("uuid")
   hex <- gsub("-", "", uuid::UUIDgenerate(use.time = TRUE), fixed = TRUE)
   paste0("sess-", substr(hex, 1L, 16L))
-} # /rtemis::new_session_id
+}
 
 
 # %% Name validation ---------------------------------------------------------
@@ -121,7 +121,7 @@ validate_session_name <- function(name) {
     )
   }
   invisible(name)
-} # /rtemis::validate_session_name
+}
 
 
 #' Generate the next available `untitled-<n>` name
@@ -147,7 +147,7 @@ next_anon_session_name <- function() {
     }
     i <- i + 1L
   }
-} # /rtemis::next_anon_session_name
+}
 
 
 # %% Lookup ------------------------------------------------------------------
@@ -170,7 +170,7 @@ get_session_by_id <- function(id) {
     return(NULL)
   }
   reg[[id]]
-} # /rtemis::get_session_by_id
+}
 
 
 #' Get a session by name
@@ -194,7 +194,7 @@ get_session_by_name <- function(name) {
     }
   }
   NULL
-} # /rtemis::get_session_by_name
+}
 
 
 #' Look up a session by name or id
@@ -212,7 +212,7 @@ get_session <- function(key) {
     return(s)
   }
   get_session_by_name(key)
-} # /rtemis::get_session
+}
 
 
 # %% Lifecycle ---------------------------------------------------------------
@@ -270,7 +270,7 @@ new_session <- function(name = NULL, max_buffer = 256L, max_sessions = 16L) {
   reg <- session_registry()
   reg[[s[["id"]]]] <- s
   s
-} # /rtemis::new_session
+}
 
 
 #' Update `last_seen` on a session
@@ -288,7 +288,7 @@ new_session <- function(name = NULL, max_buffer = 256L, max_sessions = 16L) {
 touch_session <- function(session) {
   session[["last_seen"]] <- Sys.time()
   invisible(session)
-} # /rtemis::touch_session
+}
 
 
 #' Delete a session
@@ -311,7 +311,7 @@ delete_session <- function(id) {
   }
   rm(list = id, envir = reg)
   TRUE
-} # /rtemis::delete_session
+}
 
 
 #' Rename a session
@@ -337,7 +337,7 @@ rename_session <- function(session, new_name) {
   }
   session[["name"]] <- new_name
   touch_session(session)
-} # /rtemis::rename_session
+}
 
 
 #' Garbage-collect idle sessions
@@ -370,7 +370,7 @@ gc_sessions <- function(now = Sys.time(), ttl = 86400) {
     rm(list = id, envir = reg)
   }
   expired
-} # /rtemis::gc_sessions
+}
 
 
 # %% Connection attach/detach ------------------------------------------------
@@ -393,7 +393,7 @@ attach_connection <- function(session, connection_id) {
   }
   session[["connections"]] <- unique(c(session[["connections"]], connection_id))
   touch_session(session)
-} # /rtemis::attach_connection
+}
 
 
 #' Detach a connection from a session
@@ -409,7 +409,7 @@ attach_connection <- function(session, connection_id) {
 detach_connection <- function(session, connection_id) {
   session[["connections"]] <- setdiff(session[["connections"]], connection_id)
   touch_session(session)
-} # /rtemis::detach_connection
+}
 
 
 # %% Event buffering ---------------------------------------------------------
@@ -452,7 +452,7 @@ push_event <- function(session, event) {
   session[["event_buffer"]] <- c(buf, list(event))
   touch_session(session)
   TRUE
-} # /rtemis::push_event
+}
 
 
 #' Drain a session's event buffer
@@ -476,7 +476,7 @@ drain_event_buffer <- function(session) {
   session[["event_buffer"]] <- list()
   session[["events_dropped"]] <- 0L
   out
-} # /rtemis::drain_event_buffer
+}
 
 
 # %% Wire-shaped views -------------------------------------------------------
@@ -502,7 +502,7 @@ list_sessions <- function() {
       jobs_running = count_jobs_running(s)
     )
   })
-} # /rtemis::list_sessions
+}
 
 
 #' Full session snapshot for `session.join` / `session.info`
@@ -545,7 +545,7 @@ session_snapshot <- function(session) {
     jobs = jobs,
     data = data_handles
   )
-} # /rtemis::session_snapshot
+}
 
 
 # %% Small helpers -----------------------------------------------------------

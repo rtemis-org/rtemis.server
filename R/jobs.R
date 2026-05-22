@@ -44,7 +44,7 @@ new_job_id <- function() {
   rtemis.core::check_dependencies("uuid")
   hex <- gsub("-", "", uuid::UUIDgenerate(use.time = TRUE), fixed = TRUE)
   paste0("job-", substr(hex, 1L, 16L))
-} # /rtemis::new_job_id
+}
 
 
 # %% Submission --------------------------------------------------------------
@@ -153,7 +153,7 @@ submit_job <- function(
   session[["jobs"]][[job_id]] <- job
   touch_session(session)
   job
-} # /rtemis::submit_job
+}
 
 
 #' Count active (running or cancelling) jobs across all sessions
@@ -176,7 +176,7 @@ count_active_jobs <- function() {
     }
   }
   total
-} # /rtemis::count_active_jobs
+}
 
 
 # %% Resolution and finalization --------------------------------------------
@@ -206,7 +206,7 @@ check_job_resolved <- function(job) {
   }
   finalize_job(job)
   TRUE
-} # /rtemis::check_job_resolved
+}
 
 
 #' Finalize a resolved job
@@ -267,7 +267,7 @@ finalize_job <- function(job) {
   }
 
   invisible(job)
-} # /rtemis::finalize_job
+}
 
 
 #' Format a mirai error value into a short string
@@ -284,7 +284,7 @@ format_mirai_error <- function(value) {
     msg <- paste(msg, collapse = " ")
   }
   msg
-} # /rtemis::format_mirai_error
+}
 
 
 # %% Cancellation ------------------------------------------------------------
@@ -329,7 +329,7 @@ cancel_job <- function(session, job_id) {
   )
   touch_session(session)
   TRUE
-} # /rtemis::cancel_job
+}
 
 
 # %% Lookup, list, delete ----------------------------------------------------
@@ -354,7 +354,7 @@ get_job <- function(session, job_id) {
     return(NULL)
   }
   jobs[[job_id]]
-} # /rtemis::get_job
+}
 
 
 #' Summarize a single job (wire-shaped)
@@ -388,7 +388,7 @@ job_summary <- function(job) {
     last_message = prog[["message"]],
     error = job[["error"]]
   )
-} # /rtemis::job_summary
+}
 
 
 #' List jobs in a session (wire-shaped)
@@ -403,7 +403,7 @@ job_summary <- function(job) {
 list_jobs <- function(session) {
   jobs <- session[["jobs"]]
   lapply(ls(jobs), function(jid) job_summary(jobs[[jid]]))
-} # /rtemis::list_jobs
+}
 
 
 #' Delete a finished job
@@ -438,7 +438,7 @@ delete_job <- function(session, job_id) {
   rm(list = job_id, envir = jobs)
   touch_session(session)
   TRUE
-} # /rtemis::delete_job
+}
 
 
 # %% Progress integration ----------------------------------------------------
@@ -469,4 +469,4 @@ record_job_progress <- function(job, progress) {
   }
   job[["progress"]] <- cur
   invisible(job)
-} # /rtemis::record_job_progress
+}

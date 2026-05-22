@@ -293,7 +293,7 @@ serve <- function(
   )
   http$serve()
   invisible(server)
-} # /rtemis::serve
+}
 
 
 # %% shutdown ---------------------------------------------------------
@@ -334,4 +334,4 @@ shutdown <- function(server) {
   }
   server[["stop_requested"]] <- TRUE
   invisible(NULL)
-} # /rtemis::shutdown
+}
