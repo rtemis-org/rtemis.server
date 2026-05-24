@@ -129,11 +129,11 @@ test_that("submit_job() rejects non-character type and bad env", {
   expect_error(submit_job(s, "x", list(), quote(1), env = list(1, 2)))
 })
 
-test_that("submit_job() respects max_concurrent cap", {
+test_that("submit_job() queues when max_concurrent is reached", {
   s <- make_session()
   on.exit(clear_sessions(), add = TRUE)
 
-  # Two slow tasks; we cap at 1 to force rejection.
+  # Cap at 1: first job runs, second is queued.
   job1 <- submit_job(
     s,
     "test",
@@ -141,16 +141,20 @@ test_that("submit_job() respects max_concurrent cap", {
     expr = quote(Sys.sleep(0.5)),
     max_concurrent = 1L
   )
-  expect_error(
-    submit_job(
-      s,
-      "test",
-      list(),
-      expr = quote(Sys.sleep(0.5)),
-      max_concurrent = 1L
-    ),
-    class = "rtemislive_too_many"
+  expect_equal(job1[["status"]], "running")
+
+  job2 <- submit_job(
+    s,
+    "test",
+    list(),
+    expr = quote(1L),
+    max_concurrent = 1L
   )
+  expect_equal(job2[["status"]], "queued")
+  expect_null(job2[["mirai"]])
+  expect_null(job2[["started_at"]])
+  expect_equal(job_queue_position(job2), 1L)
+
   wait_for_resolved(job1)
   check_job_resolved(job1)
 })
@@ -274,6 +278,175 @@ test_that("record_job_progress() merges into the job's progress slot", {
   expect_equal(job[["progress"]][["fraction"]], 0.9)
   expect_equal(job[["progress"]][["stage"]], "training") # preserved
   expect_equal(job[["progress"]][["message"]], "Almost")
+})
+
+
+# Queue behavior -------------------------------------------------------------
+
+# Bounded wait for status transitions.
+wait_for_status <- function(job, target, timeout = 5) {
+  start <- Sys.time()
+  while (!identical(job[["status"]], target)) {
+    if (as.numeric(difftime(Sys.time(), start, units = "secs")) > timeout) {
+      stop(sprintf(
+        "Timed out waiting for job %s to reach status %s (now: %s)",
+        job[["id"]],
+        target,
+        job[["status"]]
+      ))
+    }
+    Sys.sleep(0.02)
+  }
+}
+
+# Minimal server stub for promote_queued_jobs() tests.
+fake_server <- function(max_concurrent = 1L) {
+  e <- new.env(parent = emptyenv())
+  e[["max_concurrent"]] <- max_concurrent
+  e[["connections"]] <- new.env(parent = emptyenv())
+  e
+}
+
+
+test_that("cancel_job() on a queued job transitions straight to cancelled", {
+  s <- make_session()
+  on.exit(clear_sessions(), add = TRUE)
+
+  j1 <- submit_job(
+    s,
+    "test",
+    list(),
+    expr = quote(Sys.sleep(0.5)),
+    max_concurrent = 1L
+  )
+  j2 <- submit_job(
+    s,
+    "test",
+    list(),
+    expr = quote(1L),
+    max_concurrent = 1L
+  )
+  expect_equal(j2[["status"]], "queued")
+
+  expect_true(cancel_job(s, j2[["id"]]))
+  expect_equal(j2[["status"]], "cancelled")
+  expect_s3_class(j2[["completed_at"]], "POSIXct")
+  expect_equal(j2[["error"]][["code"]], "cancelled")
+  expect_null(j2[["pending_expr"]])
+  expect_null(j2[["pending_env"]])
+
+  wait_for_resolved(j1)
+  check_job_resolved(j1)
+})
+
+
+test_that("promote_queued_jobs() launches queued jobs in FIFO order", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  s <- new_session("q")
+  server <- fake_server(max_concurrent = 1L)
+
+  j1 <- submit_job(
+    s,
+    "test",
+    list(),
+    expr = quote(Sys.sleep(0.2)),
+    max_concurrent = 1L
+  )
+  # Force visibly different submission timestamps so FIFO order is
+  # unambiguous on fast systems.
+  Sys.sleep(0.01)
+  j2 <- submit_job(s, "test", list(), expr = quote(2L), max_concurrent = 1L)
+  Sys.sleep(0.01)
+  j3 <- submit_job(s, "test", list(), expr = quote(3L), max_concurrent = 1L)
+
+  expect_equal(j2[["status"]], "queued")
+  expect_equal(j3[["status"]], "queued")
+  expect_equal(job_queue_position(j2), 1L)
+  expect_equal(job_queue_position(j3), 2L)
+
+  # No free slot yet; nothing promoted.
+  expect_equal(promote_queued_jobs(server), 0L)
+
+  # Wait for j1 to finish + finalize, then promote should pick j2 first.
+  wait_for_resolved(j1)
+  check_job_resolved(j1)
+  expect_equal(promote_queued_jobs(server), 1L)
+  expect_equal(j2[["status"]], "running")
+  expect_equal(j3[["status"]], "queued")
+  expect_equal(job_queue_position(j3), 1L)
+
+  wait_for_resolved(j2)
+  check_job_resolved(j2)
+  expect_equal(j2[["result"]], 2L)
+  expect_equal(promote_queued_jobs(server), 1L)
+  expect_equal(j3[["status"]], "running")
+  wait_for_resolved(j3)
+  check_job_resolved(j3)
+  expect_equal(j3[["result"]], 3L)
+})
+
+
+test_that("queued jobs survive cross-session promotion in FIFO order", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  s1 <- new_session("a")
+  s2 <- new_session("b")
+  server <- fake_server(max_concurrent = 1L)
+
+  j_running <- submit_job(
+    s1,
+    "test",
+    list(),
+    expr = quote(Sys.sleep(0.2)),
+    max_concurrent = 1L
+  )
+  Sys.sleep(0.01)
+  j_other_session <- submit_job(
+    s2,
+    "test",
+    list(),
+    expr = quote("from-s2"),
+    max_concurrent = 1L
+  )
+  Sys.sleep(0.01)
+  j_same_session <- submit_job(
+    s1,
+    "test",
+    list(),
+    expr = quote("from-s1"),
+    max_concurrent = 1L
+  )
+
+  expect_equal(job_queue_position(j_other_session), 1L)
+  expect_equal(job_queue_position(j_same_session), 2L)
+
+  wait_for_resolved(j_running)
+  check_job_resolved(j_running)
+  expect_equal(promote_queued_jobs(server), 1L)
+  expect_equal(j_other_session[["status"]], "running")
+  expect_equal(j_same_session[["status"]], "queued")
+})
+
+
+test_that("job_summary() includes queue_position only for queued jobs", {
+  s <- make_session()
+  on.exit(clear_sessions(), add = TRUE)
+
+  j1 <- submit_job(
+    s,
+    "test",
+    list(),
+    expr = quote(Sys.sleep(0.3)),
+    max_concurrent = 1L
+  )
+  j2 <- submit_job(s, "test", list(), expr = quote(1L), max_concurrent = 1L)
+
+  expect_null(job_summary(j1)[["queue_position"]])
+  expect_equal(job_summary(j2)[["queue_position"]], 1L)
+
+  wait_for_resolved(j1)
+  check_job_resolved(j1)
 })
 
 
