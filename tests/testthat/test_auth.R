@@ -37,7 +37,7 @@ test_that("check_token() rejects non-character or wrong-length input", {
 
 # check_origin ----
 test_that("check_origin() accepts allowed origins", {
-  expect_true(check_origin("https://draw.rtemis.org"))
+  expect_true(check_origin("https://live.rtemis.org"))
   expect_true(check_origin("http://localhost:3000"))
   expect_true(check_origin("http://127.0.0.1:3000"))
 })
@@ -57,22 +57,22 @@ test_that("check_origin() rejects empty/NA/NULL origin", {
 
 test_that("check_origin() respects a custom allowlist", {
   expect_true(check_origin("https://my.app", c("https://my.app")))
-  expect_false(check_origin("https://draw.rtemis.org", c("https://my.app")))
+  expect_false(check_origin("https://dev.rtemis.org", c("https://my.app")))
 })
 
 
 # normalize_origins ----
 test_that("normalize_origins() strips trailing slashes and whitespace", {
   out <- normalize_origins(c(
-    " https://draw.rtemis.org/ ",
+    " https://live.rtemis.org/ ",
     "http://localhost:3000//"
   ))
-  expect_equal(out, c("https://draw.rtemis.org", "http://localhost:3000"))
+  expect_equal(out, c("https://live.rtemis.org", "http://localhost:3000"))
 })
 
 test_that("normalize_origins() returns spec defaults for NULL", {
   out <- normalize_origins(NULL)
-  expect_true("https://draw.rtemis.org" %in% out)
+  expect_true("https://live.rtemis.org" %in% out)
   expect_true("http://localhost:3000" %in% out)
 })
 
