@@ -47,7 +47,10 @@ test_that("decode_arrow_ipc() round-trips a data.table", {
   expect_equal(nrow(back), nrow(dt))
   expect_equal(ncol(back), ncol(dt))
   expect_equal(back[["x"]], dt[["x"]])
-  expect_equal(back[["y"]], dt[["y"]])
+  # `decode_arrow_ipc()` deliberately converts character columns to factor
+  # at the IPC boundary (rtemis ML pipeline expects categoricals as
+  # factors). Compare against the post-coercion expected value.
+  expect_equal(back[["y"]], factor(dt[["y"]]))
 })
 
 test_that("decode_arrow_ipc() rejects non-raw or empty input", {
@@ -160,7 +163,8 @@ test_that("describe_data() returns per-column summaries", {
     vapply(desc[["columns"]], `[[`, character(1L), "name")
   )
   expect_equal(cols_by_name[["x"]][["type"]], "integer")
-  expect_equal(cols_by_name[["y"]][["type"]], "character")
+  # `y` arrives as character but `decode_arrow_ipc()` coerces to factor.
+  expect_equal(cols_by_name[["y"]][["type"]], "factor")
   expect_equal(cols_by_name[["z"]][["type"]], "double")
   expect_equal(cols_by_name[["x"]][["n_unique"]], 10L)
   expect_equal(cols_by_name[["z"]][["n_missing"]], 1L)
