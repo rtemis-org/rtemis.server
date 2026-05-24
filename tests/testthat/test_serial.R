@@ -86,7 +86,10 @@ test_that("encode_arrow_ipc round-trips a data.table via decode_arrow_ipc", {
   expect_equal(names(back), names(dt))
   expect_equal(nrow(back), nrow(dt))
   expect_equal(back[["x"]], dt[["x"]])
-  expect_equal(back[["y"]], dt[["y"]])
+  # Character columns become factors on decode by design - see comment in
+  # `decode_arrow_ipc()` for rationale (rtemis ML expects categoricals as
+  # factors).
+  expect_equal(back[["y"]], factor(dt[["y"]]))
   expect_equal(back[["z"]], dt[["z"]])
 })
 
@@ -95,7 +98,7 @@ test_that("encode_arrow_ipc accepts a plain data.frame", {
   bytes <- encode_arrow_ipc(df)
   back <- decode_arrow_ipc(bytes)
   expect_equal(back[["a"]], df[["a"]])
-  expect_equal(back[["b"]], df[["b"]])
+  expect_equal(back[["b"]], factor(df[["b"]]))
 })
 
 test_that("encode_arrow_ipc errors on un-coercible input", {
