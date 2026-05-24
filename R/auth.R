@@ -6,7 +6,6 @@
 # Default origins (spec paragraph 11.2).
 .RTEMISLIVE_DEFAULT_ORIGINS <- c(
   "https://live.rtemis.org",
-  "https://draw.rtemis.org",
   "http://localhost:3000",
   "http://127.0.0.1:3000"
 )
@@ -131,10 +130,10 @@ normalize_origins <- function(origins) {
     return(.RTEMISLIVE_DEFAULT_ORIGINS)
   }
   if (!is.character(origins)) {
-    cli::cli_abort("`origins` must be a character vector or NULL.")
+    rtemis.core::abort("`origins` must be a character vector or NULL.")
   }
   if (any(is.na(origins)) || any(!nzchar(origins))) {
-    cli::cli_abort("`origins` must not contain NA or empty strings.")
+    rtemis.core::abort("`origins` must not contain NA or empty strings.")
   }
   sub("/+$", "", trimws(origins))
 }

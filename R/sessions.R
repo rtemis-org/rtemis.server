@@ -103,19 +103,19 @@ new_session_id <- function() {
 #' @noRd
 validate_session_name <- function(name) {
   if (!is.character(name) || length(name) != 1L || is.na(name)) {
-    cli::cli_abort(
+    rtemis.core::abort(
       "Session name must be a single non-NA character string.",
       class = "rtemislive_invalid_name"
     )
   }
   if (!nzchar(name) || nchar(name) > 64L) {
-    cli::cli_abort(
+    rtemis.core::abort(
       "Session name must be 1-64 characters.",
       class = "rtemislive_invalid_name"
     )
   }
   if (!grepl("^[A-Za-z0-9_.-]+$", name)) {
-    cli::cli_abort(
+    rtemis.core::abort(
       "Session name may contain only letters, digits, `.`, `_`, and `-`.",
       class = "rtemislive_invalid_name"
     )
@@ -233,8 +233,10 @@ get_session <- function(key) {
 #' @noRd
 new_session <- function(name = NULL, max_buffer = 256L, max_sessions = 16L) {
   if (length(ls(session_registry())) >= max_sessions) {
-    cli::cli_abort(
-      "Maximum number of sessions ({max_sessions}) reached.",
+    rtemis.core::abort(
+      "Maximum number of sessions (",
+      max_sessions,
+      ") reached.",
       class = "rtemislive_too_many_sessions"
     )
   }
@@ -245,11 +247,11 @@ new_session <- function(name = NULL, max_buffer = 256L, max_sessions = 16L) {
   validate_session_name(name)
 
   if (!is.null(get_session_by_name(name))) {
-    cli::cli_abort(
-      c(
-        "A session named {.val {name}} already exists.",
-        "i" = "Use `session.join` to attach to it instead."
-      ),
+    rtemis.core::abort(
+      "A session named '",
+      name,
+      "' already exists.\n",
+      "Use `session.join` to attach to it instead.",
       class = "rtemislive_session_exists"
     )
   }
@@ -330,8 +332,10 @@ rename_session <- function(session, new_name) {
     return(invisible(session))
   }
   if (!is.null(get_session_by_name(new_name))) {
-    cli::cli_abort(
-      "A session named {.val {new_name}} already exists.",
+    rtemis.core::abort(
+      "A session named '",
+      new_name,
+      "' already exists.",
       class = "rtemislive_session_exists"
     )
   }
@@ -389,7 +393,7 @@ gc_sessions <- function(now = Sys.time(), ttl = 86400) {
 #' @noRd
 attach_connection <- function(session, connection_id) {
   if (!is.character(connection_id) || length(connection_id) != 1L) {
-    cli::cli_abort("`connection_id` must be a single character string.")
+    rtemis.core::abort("`connection_id` must be a single character string.")
   }
   session[["connections"]] <- unique(c(session[["connections"]], connection_id))
   touch_session(session)

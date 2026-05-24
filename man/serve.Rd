@@ -36,7 +36,7 @@ that each gets a fraction of the cores.}
 
 \item{origins}{Optional character vector: Allowed \code{Origin} headers
 on the WS upgrade. \code{NULL} uses the spec defaults
-(\code{live.rtemis.org}, \code{draw.rtemis.org}, \code{localhost:3000}, etc.).}
+(\code{live.rtemis.org}, \code{localhost:3000}, etc.).}
 
 \item{token}{Optional character scalar: Auth token clients must
 present. \code{NULL} generates a fresh 8-byte random token.}

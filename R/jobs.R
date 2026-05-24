@@ -51,7 +51,7 @@ new_job_id <- function() {
 
 #' Submit a new job
 #'
-#' Wraps `expr` in a mirai task that:
+#' Wraps `expr` in a task that:
 #'
 #' 1. Tags the daemon's `rtemis::live` with the new `job_id` (so the
 #'    daemon-side `msg()` sink can attach it to forwarded messages).
@@ -61,6 +61,12 @@ new_job_id <- function() {
 #' Variables referenced from inside `expr` must be supplied via `env` - a
 #' named list - so mirai captures and serialises them to the daemon. The
 #' job_id is injected automatically.
+#'
+#' If `count_active_jobs() < max_concurrent`, the job is launched
+#' immediately and registered with `status = "running"`. Otherwise the
+#' job is queued (`status = "queued"`) with its wrapped expression and
+#' env retained on the job env, to be launched later by
+#' `promote_queued_jobs()` when slots free up.
 #'
 #' Caller is responsible for ensuring at least one mirai daemon is
 #' running (`mirai::daemons(n)`); we don't manage daemons here.
@@ -88,17 +94,10 @@ submit_job <- function(
 ) {
   rtemis.core::check_dependencies("mirai")
   if (!is.character(type) || length(type) != 1L || is.na(type)) {
-    cli::cli_abort("`type` must be a single character string.")
+    rtemis.core::abort("`type` must be a single character string.")
   }
   if (!is.list(env) || (length(env) > 0L && is.null(names(env)))) {
-    cli::cli_abort("`env` must be a (possibly empty) named list.")
-  }
-
-  if (count_active_jobs() >= max_concurrent) {
-    cli::cli_abort(
-      "Maximum number of concurrent jobs ({max_concurrent}) reached.",
-      class = "rtemislive_too_many"
-    )
+    rtemis.core::abort("`env` must be a (possibly empty) named list.")
   }
 
   job_id <- new_job_id()
@@ -129,30 +128,172 @@ submit_job <- function(
     .(expr)
   })
 
-  m <- do.call(
-    mirai::mirai,
-    c(list(.expr = wrapped), env)
-  )
-
   now <- Sys.time()
   job <- new.env(parent = emptyenv())
   job[["id"]] <- job_id
   job[["session_id"]] <- session[["id"]]
   job[["type"]] <- type
   job[["params"]] <- params
-  job[["status"]] <- "running" # mirai accepts immediately; v1 doesn't
-  # distinguish "queued" from "running"
   job[["submitted_at"]] <- now
-  job[["started_at"]] <- now
   job[["completed_at"]] <- NULL
-  job[["mirai"]] <- m
+  job[["mirai"]] <- NULL
   job[["result"]] <- NULL
   job[["error"]] <- NULL
   job[["progress"]] <- list()
+  job[["pending_expr"]] <- NULL
+  job[["pending_env"]] <- NULL
+
+  if (count_active_jobs() < max_concurrent) {
+    job[["mirai"]] <- do.call(mirai::mirai, c(list(.expr = wrapped), env))
+    job[["status"]] <- "running"
+    job[["started_at"]] <- now
+  } else {
+    job[["status"]] <- "queued"
+    job[["started_at"]] <- NULL
+    job[["pending_expr"]] <- wrapped
+    job[["pending_env"]] <- env
+  }
 
   session[["jobs"]][[job_id]] <- job
   touch_session(session)
   job
+}
+
+
+#' Promote queued jobs into running when slots are available
+#'
+#' Walks every session's job env, collects queued jobs across all
+#' sessions, sorts by `submitted_at`, and launches as many as
+#' `max_concurrent - count_active_jobs()` allows. For each promotion,
+#' emits a `job.started` event to the owning session.
+#'
+#' Called once per tick from `loop_tick()`.
+#'
+#' @param server Server env.
+#'
+#' @return Integer. Number of jobs promoted this tick.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+promote_queued_jobs <- function(server) {
+  max_c <- server[["max_concurrent"]] %||% 8L
+  free <- max_c - count_active_jobs()
+  if (free <= 0L) {
+    return(0L)
+  }
+
+  reg <- session_registry()
+  queued <- list()
+  for (sid in ls(reg)) {
+    s <- reg[[sid]]
+    jobs <- s[["jobs"]]
+    for (jid in ls(jobs)) {
+      j <- jobs[[jid]]
+      if (identical(j[["status"]], "queued")) {
+        queued[[length(queued) + 1L]] <- j
+      }
+    }
+  }
+  if (length(queued) == 0L) {
+    return(0L)
+  }
+
+  ts <- vapply(queued, function(j) as.numeric(j[["submitted_at"]]), numeric(1L))
+  queued <- queued[order(ts)]
+
+  n_promote <- min(free, length(queued))
+  promoted <- 0L
+  for (i in seq_len(n_promote)) {
+    job <- queued[[i]]
+    tryCatch(
+      {
+        job[["mirai"]] <- do.call(
+          mirai::mirai,
+          c(list(.expr = job[["pending_expr"]]), job[["pending_env"]])
+        )
+        job[["status"]] <- "running"
+        job[["started_at"]] <- Sys.time()
+        job[["pending_expr"]] <- NULL
+        job[["pending_env"]] <- NULL
+
+        s <- reg[[job[["session_id"]]]]
+        if (!is.null(s)) {
+          ev <- make_event(
+            "job.started",
+            data = list(
+              job_id = job[["id"]],
+              started_at = iso8601(job[["started_at"]])
+            )
+          )
+          emit_event_to_session(server, s, ev)
+        }
+        promoted <- promoted + 1L
+      },
+      error = function(e) {
+        # Promotion failed (mirai serialise error, daemon dead, emit
+        # broke). Mark the job as failed so it doesn't sit in the queue
+        # forever and doesn't free up a slot we then re-promote into.
+        # poll_active_jobs will pick up the terminal status next tick
+        # and emit job.failed.
+        warning(
+          sprintf(
+            "rtemislive: promotion failed for job %s: %s",
+            job[["id"]],
+            conditionMessage(e)
+          ),
+          call. = FALSE
+        )
+        job[["status"]] <- "failed"
+        job[["completed_at"]] <- Sys.time()
+        job[["pending_expr"]] <- NULL
+        job[["pending_env"]] <- NULL
+        job[["error"]] <- list(
+          code = "internal_error",
+          message = paste0(
+            "Failed to start queued job: ",
+            conditionMessage(e)
+          )
+        )
+      }
+    )
+  }
+  promoted
+}
+
+
+#' Queue position (1-based) of a queued job
+#'
+#' Counts queued jobs across all sessions with an earlier
+#' `submitted_at`, plus one. Returns `NULL` for non-queued jobs.
+#'
+#' @param job Job env.
+#'
+#' @return Integer scalar or `NULL`.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+job_queue_position <- function(job) {
+  if (!identical(job[["status"]], "queued")) {
+    return(NULL)
+  }
+  my_ts <- as.numeric(job[["submitted_at"]])
+  ahead <- 0L
+  reg <- session_registry()
+  for (sid in ls(reg)) {
+    jobs <- reg[[sid]][["jobs"]]
+    for (jid in ls(jobs)) {
+      j <- jobs[[jid]]
+      if (
+        identical(j[["status"]], "queued") &&
+          as.numeric(j[["submitted_at"]]) < my_ts
+      ) {
+        ahead <- ahead + 1L
+      }
+    }
+  }
+  ahead + 1L
 }
 
 
@@ -200,6 +341,9 @@ count_active_jobs <- function() {
 check_job_resolved <- function(job) {
   if (job[["status"]] %in% c("complete", "failed", "cancelled")) {
     return(TRUE) # already finalized
+  }
+  if (identical(job[["status"]], "queued")) {
+    return(FALSE) # not started yet; no mirai handle to poll
   }
   if (mirai::unresolved(job[["mirai"]])) {
     return(FALSE)
@@ -309,13 +453,31 @@ format_mirai_error <- function(value) {
 cancel_job <- function(session, job_id) {
   job <- session[["jobs"]][[job_id]]
   if (is.null(job)) {
-    cli::cli_abort(
-      "Unknown job_id {.val {job_id}}.",
+    rtemis.core::abort(
+      "Unknown job_id '",
+      job_id,
+      "'.",
       class = "rtemislive_not_found"
     )
   }
   if (job[["status"]] %in% c("complete", "failed", "cancelled")) {
     return(FALSE)
+  }
+  if (identical(job[["status"]], "queued")) {
+    # Never reached a daemon; transition straight to cancelled. The
+    # `emitted_resolution` flag is intentionally left unset so
+    # `poll_active_jobs()` will emit the `job.cancelled` event on the
+    # next tick.
+    job[["status"]] <- "cancelled"
+    job[["completed_at"]] <- Sys.time()
+    job[["pending_expr"]] <- NULL
+    job[["pending_env"]] <- NULL
+    job[["error"]] <- list(
+      code = "cancelled",
+      message = "Job cancelled before start."
+    )
+    touch_session(session)
+    return(TRUE)
   }
   job[["status"]] <- "cancelling"
   tryCatch(
@@ -368,7 +530,7 @@ get_job <- function(session, job_id) {
 #' @noRd
 job_summary <- function(job) {
   prog <- job[["progress"]]
-  list(
+  out <- list(
     job_id = job[["id"]],
     type = job[["type"]],
     status = job[["status"]],
@@ -388,6 +550,10 @@ job_summary <- function(job) {
     last_message = prog[["message"]],
     error = job[["error"]]
   )
+  if (identical(job[["status"]], "queued")) {
+    out[["queue_position"]] <- job_queue_position(job)
+  }
+  out
 }
 
 
@@ -429,9 +595,11 @@ delete_job <- function(session, job_id) {
     return(FALSE)
   }
   job <- jobs[[job_id]]
-  if (job[["status"]] %in% c("running", "cancelling")) {
-    cli::cli_abort(
-      "Cannot delete a {job[['status']]} job - cancel and wait first.",
+  if (job[["status"]] %in% c("running", "cancelling", "queued")) {
+    rtemis.core::abort(
+      "Cannot delete a ",
+      job[["status"]],
+      " job - cancel and wait first.",
       class = "rtemislive_invalid_params"
     )
   }
@@ -461,7 +629,7 @@ delete_job <- function(session, job_id) {
 #' @noRd
 record_job_progress <- function(job, progress) {
   if (!is.list(progress)) {
-    cli::cli_abort("`progress` must be a list.")
+    rtemis.core::abort("`progress` must be a list.")
   }
   cur <- job[["progress"]]
   for (k in names(progress)) {

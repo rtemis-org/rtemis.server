@@ -431,21 +431,54 @@ poll_active_jobs <- function(server) {
       if (isTRUE(job[["emitted_resolution"]])) {
         next
       }
-      # `check_job_resolved()` short-circuits TRUE for already-terminal
-      # jobs and polls mirai only when the status is still in-flight.
-      # Pre-terminal jobs without an emitted_resolution flag still need
-      # to fire their event here (e.g. jobs finalized between server
-      # restarts in tests, or finalized via direct `check_job_resolved`
-      # by client-driven `job.result` requests).
-      if (!check_job_resolved(job)) {
-        next
-      }
-      ev <- job_resolution_event(job)
-      if (!is.null(ev)) {
-        emit_event_to_session(server, s, ev)
-        emitted <- emitted + 1L
-      }
-      job[["emitted_resolution"]] <- TRUE
+      # Per-job tryCatch: a throw inside check_job_resolved (e.g. a
+      # mirai value that fails to deserialize) or inside the emit path
+      # must not stall the entire tick. After repeated failures we mark
+      # the job as failed and stop retrying so it can't block
+      # `count_active_jobs()` forever.
+      result <- tryCatch(
+        {
+          # `check_job_resolved()` short-circuits TRUE for already-
+          # terminal jobs and polls mirai only when the status is still
+          # in-flight. Pre-terminal jobs without an emitted_resolution
+          # flag still need to fire their event here.
+          if (!check_job_resolved(job)) {
+            "skip"
+          } else {
+            ev <- job_resolution_event(job)
+            if (!is.null(ev)) {
+              emit_event_to_session(server, s, ev)
+              emitted <- emitted + 1L
+            }
+            job[["emitted_resolution"]] <- TRUE
+            "ok"
+          }
+        },
+        error = function(e) {
+          warning(
+            sprintf(
+              "rtemislive: poll failed for job %s: %s",
+              job[["id"]],
+              conditionMessage(e)
+            ),
+            call. = FALSE
+          )
+          job[["poll_error_count"]] <- (job[["poll_error_count"]] %||% 0L) + 1L
+          if (job[["poll_error_count"]] >= 3L) {
+            job[["status"]] <- "failed"
+            job[["error"]] <- list(
+              code = "internal_error",
+              message = paste0(
+                "Server failed to finalize job after 3 attempts: ",
+                conditionMessage(e)
+              )
+            )
+            job[["emitted_resolution"]] <- TRUE
+          }
+          "error"
+        }
+      )
+      invisible(result)
     }
   }
   emitted
@@ -571,14 +604,42 @@ loop_tick <- function(server) {
     frames_dispatched <- frames_dispatched + process_connection(conn, server)
   }
 
-  progress_routed <- drain_and_route_progress(server)
-  jobs_resolved <- poll_active_jobs(server)
-  periodic <- maybe_tick_periodic(server)
+  tick <- host_tick(server)
 
   list(
     frames_dispatched = frames_dispatched,
+    progress_routed = tick[["progress_routed"]],
+    jobs_resolved = tick[["jobs_resolved"]],
+    jobs_promoted = tick[["jobs_promoted"]],
+    heartbeats_emitted = tick[["heartbeats_emitted"]],
+    gc_ran = tick[["gc_ran"]]
+  )
+}
+
+
+#' Run one tick of background host work
+#'
+#' Drain progress, poll resolutions, promote queued jobs, run periodic
+#' tasks. Shared by `loop_tick()` (manual/test driving) and by
+#' `serve()`'s `later`-scheduled `schedule_tick` closure. Keep these in
+#' sync by calling this helper - do NOT inline the sequence again.
+#'
+#' @param server Server env.
+#'
+#' @return Named list of per-step counts.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+host_tick <- function(server) {
+  progress_routed <- drain_and_route_progress(server)
+  jobs_resolved <- poll_active_jobs(server)
+  jobs_promoted <- promote_queued_jobs(server)
+  periodic <- maybe_tick_periodic(server)
+  list(
     progress_routed = progress_routed,
     jobs_resolved = jobs_resolved,
+    jobs_promoted = jobs_promoted,
     heartbeats_emitted = periodic[["heartbeats_emitted"]],
     gc_ran = periodic[["gc_ran"]]
   )

@@ -53,7 +53,7 @@ default_progress_url <- function() {
 bind_progress_socket <- function(url) {
   rtemis.core::check_dependencies("nanonext")
   if (!is.character(url) || length(url) != 1L || !nzchar(url)) {
-    cli::cli_abort("`url` must be a single non-empty character string.")
+    rtemis.core::abort("`url` must be a single non-empty character string.")
   }
   nanonext::socket("pull", listen = url)
 }
@@ -247,7 +247,7 @@ route_progress <- function(messages, send_event = NULL) {
 init_daemon_progress <- function(url) {
   rtemis.core::check_dependencies("mirai")
   if (!is.character(url) || length(url) != 1L || !nzchar(url)) {
-    cli::cli_abort("`url` must be a single non-empty character string.")
+    rtemis.core::abort("`url` must be a single non-empty character string.")
   }
 
   # NOTE on the inline expression below:

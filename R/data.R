@@ -67,17 +67,18 @@ new_upload_id <- function() {
 #' @noRd
 decode_arrow_ipc <- function(bytes) {
   if (!is.raw(bytes)) {
-    cli::cli_abort("Arrow IPC payload must be a raw vector.")
+    rtemis.core::abort("Arrow IPC payload must be a raw vector.")
   }
   if (length(bytes) == 0L) {
-    cli::cli_abort("Arrow IPC payload is empty.")
+    rtemis.core::abort("Arrow IPC payload is empty.")
   }
   rtemis.core::check_dependencies("arrow")
   tbl <- tryCatch(
     arrow::read_ipc_stream(bytes, as_data_frame = FALSE),
     error = function(e) {
-      cli::cli_abort(
-        "Could not decode Arrow IPC stream.",
+      rtemis.core::abort(
+        "Could not decode Arrow IPC stream: ",
+        conditionMessage(e),
         parent = e
       )
     }
@@ -115,12 +116,14 @@ new_data_handle <- function(session, name, bytes, max_handles = 16L) {
   if (
     !is.character(name) || length(name) != 1L || is.na(name) || !nzchar(name)
   ) {
-    cli::cli_abort("`name` must be a single non-empty character string.")
+    rtemis.core::abort("`name` must be a single non-empty character string.")
   }
   data_env <- session[["data"]]
   if (length(ls(data_env)) >= max_handles) {
-    cli::cli_abort(
-      "Maximum number of data handles per session ({max_handles}) reached.",
+    rtemis.core::abort(
+      "Maximum number of data handles per session (",
+      max_handles,
+      ") reached.",
       class = "rtemislive_too_many"
     )
   }
@@ -181,15 +184,15 @@ begin_upload <- function(session, name, total_bytes, n_chunks) {
   if (
     !is.character(name) || length(name) != 1L || is.na(name) || !nzchar(name)
   ) {
-    cli::cli_abort("`name` must be a single non-empty character string.")
+    rtemis.core::abort("`name` must be a single non-empty character string.")
   }
   if (
     !is.numeric(total_bytes) || length(total_bytes) != 1L || total_bytes <= 0L
   ) {
-    cli::cli_abort("`total_bytes` must be a single positive integer.")
+    rtemis.core::abort("`total_bytes` must be a single positive integer.")
   }
   if (!is.numeric(n_chunks) || length(n_chunks) != 1L || n_chunks <= 0L) {
-    cli::cli_abort("`n_chunks` must be a single positive integer.")
+    rtemis.core::abort("`n_chunks` must be a single positive integer.")
   }
   total_bytes <- as.integer(total_bytes)
   n_chunks <- as.integer(n_chunks)
@@ -226,13 +229,15 @@ begin_upload <- function(session, name, total_bytes, n_chunks) {
 #' @noRd
 chunk_upload <- function(session, upload_id, chunk_index, bytes) {
   if (!is.raw(bytes)) {
-    cli::cli_abort("Chunk payload must be a raw vector.")
+    rtemis.core::abort("Chunk payload must be a raw vector.")
   }
   pu <- pending_uploads(session)
   u <- pu[[upload_id]]
   if (is.null(u)) {
-    cli::cli_abort(
-      "Unknown upload_id {.val {upload_id}}.",
+    rtemis.core::abort(
+      "Unknown upload_id '",
+      upload_id,
+      "'.",
       class = "rtemislive_not_found"
     )
   }
@@ -242,15 +247,21 @@ chunk_upload <- function(session, upload_id, chunk_index, bytes) {
       chunk_index < 1L ||
       chunk_index > u[["n_chunks"]]
   ) {
-    cli::cli_abort(
-      "`chunk_index` must be between 1 and {u[['n_chunks']]} (got {chunk_index}).",
+    rtemis.core::abort(
+      "`chunk_index` must be between 1 and ",
+      u[["n_chunks"]],
+      " (got ",
+      chunk_index,
+      ").",
       class = "rtemislive_invalid_params"
     )
   }
   chunk_index <- as.integer(chunk_index)
   if (!is.null(u[["chunks"]][[chunk_index]])) {
-    cli::cli_abort(
-      "Chunk {chunk_index} already received.",
+    rtemis.core::abort(
+      "Chunk ",
+      chunk_index,
+      " already received.",
       class = "rtemislive_invalid_params"
     )
   }
@@ -286,28 +297,33 @@ end_upload <- function(session, upload_id, max_handles = 16L) {
   pu <- pending_uploads(session)
   u <- pu[[upload_id]]
   if (is.null(u)) {
-    cli::cli_abort(
-      "Unknown upload_id {.val {upload_id}}.",
+    rtemis.core::abort(
+      "Unknown upload_id '",
+      upload_id,
+      "'.",
       class = "rtemislive_not_found"
     )
   }
   on.exit(rm(list = upload_id, envir = pu), add = TRUE)
 
   if (u[["received_count"]] != u[["n_chunks"]]) {
-    cli::cli_abort(
-      paste0(
-        "Upload incomplete: received {u[['received_count']]} of ",
-        "{u[['n_chunks']]} chunks."
-      ),
+    rtemis.core::abort(
+      "Upload incomplete: received ",
+      u[["received_count"]],
+      " of ",
+      u[["n_chunks"]],
+      " chunks.",
       class = "rtemislive_invalid_params"
     )
   }
   if (u[["received_bytes"]] != u[["total_bytes"]]) {
-    cli::cli_abort(
-      paste0(
-        "Upload size mismatch: declared {u[['total_bytes']]} bytes, ",
-        "received {u[['received_bytes']]}."
-      ),
+    rtemis.core::abort(
+      "Upload size mismatch: declared ",
+      u[["total_bytes"]],
+      " bytes, ",
+      "received ",
+      u[["received_bytes"]],
+      ".",
       class = "rtemislive_invalid_params"
     )
   }
@@ -357,8 +373,10 @@ cancel_upload <- function(session, upload_id) {
 get_data <- function(session, handle) {
   h <- session[["data"]][[handle]]
   if (is.null(h)) {
-    cli::cli_abort(
-      "Unknown data_handle {.val {handle}}.",
+    rtemis.core::abort(
+      "Unknown data_handle '",
+      handle,
+      "'.",
       class = "rtemislive_not_found"
     )
   }

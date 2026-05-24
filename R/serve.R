@@ -46,7 +46,7 @@
 #'   that each gets a fraction of the cores.
 #' @param origins Optional character vector: Allowed `Origin` headers
 #'   on the WS upgrade. `NULL` uses the spec defaults
-#'   (`live.rtemis.org`, `draw.rtemis.org`, `localhost:3000`, etc.).
+#'   (`live.rtemis.org`, `localhost:3000`, etc.).
 #' @param token Optional character scalar: Auth token clients must
 #'   present. `NULL` generates a fresh 8-byte random token.
 #' @param heartbeat_interval Numeric, seconds: Heartbeat tick rate.
@@ -112,40 +112,59 @@ serve <- function(
   }
   port <- as.integer(port)
   if (is.na(port) || port < 1024L || port > 49151L) {
-    cli::cli_abort("`port` must be an integer in 1024:49151 (got {port}).")
+    rtemis.core::abort(
+      "`port` must be an integer in 1024:49151 (got ",
+      port,
+      ")."
+    )
   }
   if (
     !is.character(host) ||
       length(host) != 1L ||
       !host %in% c("127.0.0.1", "localhost", "::1")
   ) {
-    cli::cli_abort(c(
-      "`host` must be a loopback address.",
-      "i" = "Got {.val {host}}; rtemislive only binds to 127.0.0.1 / localhost / ::1."
-    ))
+    rtemis.core::abort(
+      "`host` must be a loopback address.\n",
+      "Got '",
+      host,
+      "'; rtemislive only binds to 127.0.0.1 / localhost / ::1."
+    )
   }
   origins <- normalize_origins(origins)
   if (is.null(token)) {
     token <- generate_token()
   } else if (!is.character(token) || length(token) != 1L || !nzchar(token)) {
-    cli::cli_abort("`token` must be a single non-empty character string.")
+    rtemis.core::abort(
+      "`token` must be a single non-empty character string."
+    )
   }
   n_daemons <- as.integer(n_daemons)
   if (is.na(n_daemons) || n_daemons < 1L) {
-    cli::cli_abort("`n_daemons` must be a positive integer.")
+    rtemis.core::abort("`n_daemons` must be a positive integer.")
   }
 
+  # Push the requested verbosity into the option so info() / warn() / etc.
+  # called anywhere downstream gate themselves correctly without each
+  # callsite having to thread the value through.
+  options(rtemis.server.verbosity = as.integer(verbosity))
+
   # %% Daemons + progress channel -----
-  if (verbosity >= 1L) {
-    cli::cli_alert_info("Starting {n_daemons} mirai daemon{?s}...")
-  }
+  rtemis.core::info(
+    "Starting ",
+    n_daemons,
+    " mirai daemon",
+    if (n_daemons == 1L) "" else "s",
+    "...",
+    package = "rtemis.server"
+  )
   mirai::daemons(n_daemons)
 
   progress_url <- default_progress_url()
   progress_sock <- bind_progress_socket(progress_url)
-  if (verbosity >= 1L) {
-    cli::cli_alert_info("Initialising daemon-side progress sink...")
-  }
+  rtemis.core::info(
+    "Initialising daemon-side progress sink...",
+    package = "rtemis.server"
+  )
   init_daemon_progress(progress_url)
 
   # %% Server state -----
@@ -215,13 +234,11 @@ serve <- function(
       tryCatch(
         drain_buffer(conn, server),
         error = function(e) {
-          if (verbosity >= 1L) {
-            warning(
-              "rtemislive drain error: ",
-              conditionMessage(e),
-              call. = FALSE
-            )
-          }
+          rtemis.core::warn(
+            "drain error: ",
+            conditionMessage(e),
+            package = "rtemis.server"
+          )
         }
       )
       invisible(NULL)
@@ -252,15 +269,13 @@ serve <- function(
       return(invisible(NULL))
     }
     tryCatch(
-      {
-        drain_and_route_progress(server)
-        poll_active_jobs(server)
-        maybe_tick_periodic(server)
-      },
+      host_tick(server),
       error = function(e) {
-        if (verbosity >= 1L) {
-          warning("rtemislive tick error: ", conditionMessage(e), call. = FALSE)
-        }
+        rtemis.core::warn(
+          "tick error: ",
+          conditionMessage(e),
+          package = "rtemis.server"
+        )
       }
     )
     later::later(schedule_tick, delay = tick_seconds)
@@ -268,19 +283,23 @@ serve <- function(
   later::later(schedule_tick, delay = 0.01)
 
   # %% Banner -----
-  if (verbosity >= 1L) {
-    cli::cli_h1("rtemislive")
-    cli::cli_alert_success(
-      "Listening on {.url ws://{host}:{port}}"
-    )
-    cli::cli_alert_info(
-      "Allowed origins: {paste(server[['origins']], collapse = ', ')}"
-    )
-    cli::cli_alert_info(
-      "Connection token: {.val {token}}"
-    )
-    cli::cli_alert_info("Press Ctrl-C to stop.")
-  }
+  rtemis.core::success(
+    "rtemislive listening on ws://",
+    host,
+    ":",
+    port,
+    package = "rtemis.server"
+  )
+  rtemis.core::info(
+    "Allowed origins: ",
+    paste(server[["origins"]], collapse = ", "),
+    package = "rtemis.server"
+  )
+  rtemis.core::info(
+    "Connection token: ",
+    token,
+    package = "rtemis.server"
+  )
 
   # %% Run the loop -----
   on.exit(
@@ -330,7 +349,7 @@ serve <- function(
 #' }
 shutdown <- function(server) {
   if (!is.environment(server)) {
-    cli::cli_abort("`server` must be the env returned by `serve()`.")
+    rtemis.core::abort("`server` must be the env returned by `serve()`.")
   }
   server[["stop_requested"]] <- TRUE
   invisible(NULL)

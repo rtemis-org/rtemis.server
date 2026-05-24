@@ -317,6 +317,10 @@ handle_info <- function(conn, frame, server) {
     as.character(utils::packageVersion("rtemis")),
     error = function(e) NA_character_
   )
+  rtemis_server_v <- tryCatch(
+    as.character(utils::packageVersion("rtemis.server")),
+    error = function(e) NA_character_
+  )
   uptime <- as.numeric(
     difftime(Sys.time(), server[["started_at"]], units = "secs")
   )
@@ -324,9 +328,11 @@ handle_info <- function(conn, frame, server) {
     req_id,
     list(
       server = "rtemislive",
+      rtemis_server_version = rtemis_server_v,
       rtemis_version = rtemis_v,
       r_version = R.version.string,
       daemons = daemons,
+      max_concurrent = server[["max_concurrent"]] %||% 8L,
       uptime_seconds = uptime,
       n_sessions = length(ls(session_registry())),
       n_jobs_running = count_active_jobs()
@@ -487,7 +493,7 @@ handle_algorithm_describe <- function(conn, frame, server) {
   params <- frame[["header"]][["params"]] %||% list()
   name <- params[["name"]]
   if (is.null(name) || !is.character(name) || length(name) != 1L) {
-    cli::cli_abort(
+    rtemis.core::abort(
       "`name` is required and must be a single algorithm name.",
       class = "rtemislive_invalid_params"
     )
@@ -496,7 +502,7 @@ handle_algorithm_describe <- function(conn, frame, server) {
   alg_name <- tryCatch(
     get_alg_name(name),
     error = function(e) {
-      cli::cli_abort(
+      rtemis.core::abort(
         paste0("Unknown algorithm `", name, "`."),
         class = "rtemislive_not_found"
       )
@@ -507,7 +513,7 @@ handle_algorithm_describe <- function(conn, frame, server) {
   setup_fn <- tryCatch(
     get(setup_fn_name, envir = asNamespace("rtemis")),
     error = function(e) {
-      cli::cli_abort(
+      rtemis.core::abort(
         paste0("No setup function for `", alg_name, "`."),
         class = "rtemislive_not_found"
       )
@@ -518,7 +524,7 @@ handle_algorithm_describe <- function(conn, frame, server) {
   hp <- tryCatch(
     setup_fn(),
     error = function(e) {
-      cli::cli_abort(
+      rtemis.core::abort(
         paste0("`", setup_fn_name, "()` failed: ", conditionMessage(e)),
         class = "rtemislive_internal_error"
       )
@@ -632,7 +638,7 @@ handle_session_join <- function(conn, frame, server) {
     s <- get_session_by_name(params[["name"]])
   }
   if (is.null(s)) {
-    cli::cli_abort(
+    rtemis.core::abort(
       "Session not found.",
       class = "rtemislive_session_not_found"
     )
@@ -669,14 +675,14 @@ handle_session_rename <- function(conn, frame, server) {
   params <- frame[["header"]][["params"]] %||% list()
   new_name <- params[["name"]]
   if (is.null(new_name)) {
-    cli::cli_abort(
+    rtemis.core::abort(
       "`name` is required.",
       class = "rtemislive_invalid_params"
     )
   }
   s <- connection_session(conn)
   if (is.null(s)) {
-    cli::cli_abort(
+    rtemis.core::abort(
       "Not attached to a session.",
       class = "rtemislive_not_attached"
     )
@@ -697,7 +703,7 @@ handle_session_delete <- function(conn, frame, server) {
   req_id <- frame[["header"]][["id"]] %||% NA_character_
   s <- connection_session(conn)
   if (is.null(s)) {
-    cli::cli_abort(
+    rtemis.core::abort(
       "Not attached to a session.",
       class = "rtemislive_not_attached"
     )
@@ -718,7 +724,7 @@ handle_session_info <- function(conn, frame, server) {
   req_id <- frame[["header"]][["id"]] %||% NA_character_
   s <- connection_session(conn)
   if (is.null(s)) {
-    cli::cli_abort(
+    rtemis.core::abort(
       "Not attached to a session.",
       class = "rtemislive_not_attached"
     )
@@ -741,14 +747,14 @@ handle_data_upload <- function(conn, frame, server) {
   params <- frame[["header"]][["params"]] %||% list()
   name <- params[["name"]]
   if (is.null(name)) {
-    cli::cli_abort(
+    rtemis.core::abort(
       "`name` is required.",
       class = "rtemislive_invalid_params"
     )
   }
   payload <- frame[["payload"]]
   if (is.null(payload) || !is.raw(payload) || length(payload) == 0L) {
-    cli::cli_abort(
+    rtemis.core::abort(
       "Arrow IPC payload is required for data.upload.",
       class = "rtemislive_invalid_params"
     )
@@ -772,7 +778,7 @@ handle_data_upload_begin <- function(conn, frame, server) {
       is.null(params[["total_bytes"]]) ||
       is.null(params[["n_chunks"]])
   ) {
-    cli::cli_abort(
+    rtemis.core::abort(
       "`name`, `total_bytes`, and `n_chunks` are required.",
       class = "rtemislive_invalid_params"
     )
@@ -799,14 +805,14 @@ handle_data_upload_chunk <- function(conn, frame, server) {
   req_id <- frame[["header"]][["id"]] %||% NA_character_
   params <- frame[["header"]][["params"]] %||% list()
   if (is.null(params[["upload_id"]]) || is.null(params[["chunk_index"]])) {
-    cli::cli_abort(
+    rtemis.core::abort(
       "`upload_id` and `chunk_index` are required.",
       class = "rtemislive_invalid_params"
     )
   }
   payload <- frame[["payload"]]
   if (is.null(payload) || !is.raw(payload)) {
-    cli::cli_abort(
+    rtemis.core::abort(
       "Chunk payload is required.",
       class = "rtemislive_invalid_params"
     )
@@ -832,7 +838,7 @@ handle_data_upload_end <- function(conn, frame, server) {
   params <- frame[["header"]][["params"]] %||% list()
   upload_id <- params[["upload_id"]]
   if (is.null(upload_id)) {
-    cli::cli_abort(
+    rtemis.core::abort(
       "`upload_id` is required.",
       class = "rtemislive_invalid_params"
     )
@@ -853,7 +859,7 @@ handle_data_upload_cancel <- function(conn, frame, server) {
   params <- frame[["header"]][["params"]] %||% list()
   upload_id <- params[["upload_id"]]
   if (is.null(upload_id)) {
-    cli::cli_abort(
+    rtemis.core::abort(
       "`upload_id` is required.",
       class = "rtemislive_invalid_params"
     )
@@ -886,7 +892,7 @@ handle_data_describe <- function(conn, frame, server) {
   params <- frame[["header"]][["params"]] %||% list()
   handle <- params[["data_handle"]]
   if (is.null(handle)) {
-    cli::cli_abort(
+    rtemis.core::abort(
       "`data_handle` is required.",
       class = "rtemislive_invalid_params"
     )
@@ -906,7 +912,7 @@ handle_data_delete <- function(conn, frame, server) {
   params <- frame[["header"]][["params"]] %||% list()
   handle <- params[["data_handle"]]
   if (is.null(handle)) {
-    cli::cli_abort(
+    rtemis.core::abort(
       "`data_handle` is required.",
       class = "rtemislive_invalid_params"
     )
@@ -949,7 +955,7 @@ handle_train <- function(conn, frame, server) {
   data_handle <- params[["data_handle"]]
   algorithm <- params[["algorithm"]]
   if (is.null(data_handle) || is.null(algorithm)) {
-    cli::cli_abort(
+    rtemis.core::abort(
       "`data_handle` and `algorithm` are required.",
       class = "rtemislive_invalid_params"
     )
@@ -965,8 +971,15 @@ handle_train <- function(conn, frame, server) {
     tryCatch(
       builder(value),
       error = function(e) {
-        cli::cli_abort(
-          paste0("Could not parse ", what, "."),
+        # Include the parent's message in the wire text so the browser
+        # surfaces the specific reason (e.g. which hyperparameter failed
+        # to parse). The condition object still carries `parent = e` for
+        # programmatic handlers.
+        rtemis.core::abort(
+          "Could not parse ",
+          what,
+          ": ",
+          conditionMessage(e),
           parent = e,
           class = "rtemislive_invalid_params"
         )
@@ -1041,7 +1054,11 @@ handle_train <- function(conn, frame, server) {
     max_concurrent = server[["max_concurrent"]] %||% 8L
   )
 
-  make_response(req_id, list(job_id = job[["id"]]))
+  resp <- list(job_id = job[["id"]], status = job[["status"]])
+  if (identical(job[["status"]], "queued")) {
+    resp[["queue_position"]] <- job_queue_position(job)
+  }
+  make_response(req_id, resp)
 }
 
 
@@ -1067,7 +1084,7 @@ handle_job_status <- function(conn, frame, server) {
   params <- frame[["header"]][["params"]] %||% list()
   job_id <- params[["job_id"]]
   if (is.null(job_id)) {
-    cli::cli_abort(
+    rtemis.core::abort(
       "`job_id` is required.",
       class = "rtemislive_invalid_params"
     )
@@ -1075,8 +1092,10 @@ handle_job_status <- function(conn, frame, server) {
   s <- connection_session(conn)
   job <- get_job(s, job_id)
   if (is.null(job)) {
-    cli::cli_abort(
-      "Unknown job_id.",
+    rtemis.core::abort(
+      "Unknown job_id '",
+      job_id,
+      "'.",
       class = "rtemislive_not_found"
     )
   }
@@ -1094,7 +1113,7 @@ handle_job_cancel <- function(conn, frame, server) {
   params <- frame[["header"]][["params"]] %||% list()
   job_id <- params[["job_id"]]
   if (is.null(job_id)) {
-    cli::cli_abort(
+    rtemis.core::abort(
       "`job_id` is required.",
       class = "rtemislive_invalid_params"
     )
@@ -1129,7 +1148,7 @@ handle_job_result <- function(conn, frame, server) {
   params <- frame[["header"]][["params"]] %||% list()
   job_id <- params[["job_id"]]
   if (is.null(job_id)) {
-    cli::cli_abort(
+    rtemis.core::abort(
       "`job_id` is required.",
       class = "rtemislive_invalid_params"
     )
@@ -1139,14 +1158,16 @@ handle_job_result <- function(conn, frame, server) {
   s <- connection_session(conn)
   job <- get_job(s, job_id)
   if (is.null(job)) {
-    cli::cli_abort(
-      "Unknown job_id.",
+    rtemis.core::abort(
+      "Unknown job_id '",
+      job_id,
+      "'.",
       class = "rtemislive_not_found"
     )
   }
 
   if (!identical(job[["status"]], "complete")) {
-    cli::cli_abort(
+    rtemis.core::abort(
       paste0(
         "Job status is `",
         job[["status"]],
@@ -1201,7 +1222,7 @@ handle_job_result <- function(conn, frame, server) {
   }
   if (slice == "metrics") {
     if (!inherits(result, "rtemis::Supervised")) {
-      cli::cli_abort(
+      rtemis.core::abort(
         "`metrics` slice requires a `Supervised` result.",
         class = "rtemislive_invalid_params"
       )
@@ -1219,7 +1240,7 @@ handle_job_result <- function(conn, frame, server) {
     }
     return(make_response(req_id, out))
   }
-  cli::cli_abort(
+  rtemis.core::abort(
     paste0(
       "Unsupported slice `",
       slice,
@@ -1240,7 +1261,7 @@ handle_job_delete <- function(conn, frame, server) {
   params <- frame[["header"]][["params"]] %||% list()
   job_id <- params[["job_id"]]
   if (is.null(job_id)) {
-    cli::cli_abort(
+    rtemis.core::abort(
       "`job_id` is required.",
       class = "rtemislive_invalid_params"
     )

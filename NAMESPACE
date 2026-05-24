@@ -3,7 +3,6 @@
 export(serve)
 export(shutdown)
 import(S7)
-import(cli)
 import(data.table)
 import(later)
 import(methods)

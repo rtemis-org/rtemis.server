@@ -28,8 +28,9 @@ encode_arrow_ipc <- function(df) {
   tbl <- tryCatch(
     arrow::arrow_table(df),
     error = function(e) {
-      cli::cli_abort(
-        "Could not coerce object to an Arrow Table.",
+      rtemis.core::abort(
+        "Could not coerce object to an Arrow Table: ",
+        conditionMessage(e),
         parent = e
       )
     }
@@ -62,9 +63,12 @@ encode_arrow_ipc <- function(df) {
 #' @keywords internal
 #' @noRd
 predictions_table <- function(sup) {
+  if (inherits(sup, "rtemis::SupervisedRes")) {
+    return(predictions_table_resampled(sup))
+  }
   if (!inherits(sup, "rtemis::Supervised")) {
-    cli::cli_abort(
-      "`predictions` slice requires a `Supervised` result.",
+    rtemis.core::abort(
+      "`predictions` slice requires a `Supervised` or `SupervisedRes` result.",
       class = "rtemislive_invalid_params"
     )
   }
@@ -103,9 +107,7 @@ predictions_table <- function(sup) {
     if (n == 0L) {
       next
     }
-    # Align actual to predicted length defensively - for resampled fits
-    # `y_training` may be a list-of-vectors; only the simple vector case
-    # gets a real `actual` column.
+    # Align actual to predicted length defensively.
     if (length(actual) != n) {
       actual <- rep(NA, n)
     }
@@ -141,6 +143,85 @@ predictions_table <- function(sup) {
 }
 
 
+#' Long-format predictions table for a `SupervisedRes` result
+#'
+#' For resampled fits `y_training` / `predicted_training` / `y_test` /
+#' `predicted_test` are *lists* of per-fold vectors. We stack them into
+#' a single long table with `split`, `fold`, `actual`, `predicted`
+#' columns (no validation split exists for SupervisedRes).
+#'
+#' Probabilities are skipped for v1 - the per-fold structure makes it
+#' awkward to cbind heterogeneous prob columns and the UI doesn't need
+#' them yet.
+#'
+#' @param sup `SupervisedRes` object.
+#'
+#' @return `data.table`.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+predictions_table_resampled <- function(sup) {
+  splits <- list(
+    training = list(
+      actual = prop(sup, "y_training"),
+      predicted = prop(sup, "predicted_training")
+    ),
+    test = list(
+      actual = prop(sup, "y_test"),
+      predicted = prop(sup, "predicted_test")
+    )
+  )
+
+  pieces <- list()
+  for (split_name in names(splits)) {
+    split <- splits[[split_name]]
+    actual_list <- split[["actual"]]
+    pred_list <- split[["predicted"]]
+    if (is.null(actual_list) || is.null(pred_list)) {
+      next
+    }
+    if (!is.list(actual_list)) {
+      actual_list <- list(actual_list)
+    }
+    if (!is.list(pred_list)) {
+      pred_list <- list(pred_list)
+    }
+    fold_labels <- names(pred_list)
+    if (is.null(fold_labels) || any(!nzchar(fold_labels))) {
+      fold_labels <- as.character(seq_along(pred_list))
+    }
+    for (i in seq_along(pred_list)) {
+      predicted <- pred_list[[i]]
+      actual <- if (i <= length(actual_list)) actual_list[[i]] else NULL
+      n <- length(predicted)
+      if (n == 0L) {
+        next
+      }
+      if (is.null(actual) || length(actual) != n) {
+        actual <- rep(NA, n)
+      }
+      pieces[[length(pieces) + 1L]] <- data.table::data.table(
+        split = split_name,
+        fold = fold_labels[i],
+        actual = actual,
+        predicted = predicted
+      )
+    }
+  }
+
+  if (length(pieces) == 0L) {
+    return(data.table::data.table(
+      split = character(0),
+      fold = character(0),
+      actual = numeric(0),
+      predicted = numeric(0)
+    ))
+  }
+  data.table::rbindlist(pieces, fill = TRUE, use.names = TRUE)
+}
+
+
 # %% Variable importance table ----------------------------------------------
 
 #' Extract the variable-importance table from a `Supervised`
@@ -157,16 +238,59 @@ predictions_table <- function(sup) {
 #' @keywords internal
 #' @noRd
 varimp_table <- function(sup) {
-  if (!inherits(sup, "rtemis::Supervised")) {
-    return(NULL)
-  }
-  vi <- prop(sup, "varimp")
+  vi <- tryCatch(rtemis::get_varimp(sup), error = function(e) NULL)
   if (is.null(vi)) {
     return(NULL)
   }
-  if (inherits(vi, "rtemis::VariableImportance")) {
-    return(prop(vi, "data"))
+
+  vi_data <- function(x) {
+    if (inherits(x, "rtemis::VariableImportance")) {
+      prop(x, "data")
+    } else if (data.table::is.data.table(x) || is.data.frame(x)) {
+      data.table::as.data.table(x)
+    } else {
+      NULL
+    }
   }
+
+  # Single Supervised: one VariableImportance.
+  if (inherits(vi, "rtemis::VariableImportance")) {
+    return(vi_data(vi))
+  }
+
+  # SupervisedRes: list of VariableImportance, one per fold. Combine
+  # into a long-by-fold table so the UI can render a boxplot. Fold
+  # names come from the list names when present, else integer indices.
+  if (is.list(vi)) {
+    fold_labels <- names(vi)
+    if (is.null(fold_labels) || any(!nzchar(fold_labels))) {
+      fold_labels <- as.character(seq_along(vi))
+    }
+    pieces <- list()
+    for (i in seq_along(vi)) {
+      dt <- vi_data(vi[[i]])
+      if (is.null(dt) || NROW(dt) == 0L) {
+        next
+      }
+      dt <- data.table::copy(dt)
+      dt[, fold := fold_labels[i]]
+      # Move `fold` to the second column for stable display order
+      # (`variable` stays first).
+      cols <- names(dt)
+      ordered <- c(
+        "variable",
+        "fold",
+        setdiff(cols, c("variable", "fold"))
+      )
+      data.table::setcolorder(dt, ordered)
+      pieces[[length(pieces) + 1L]] <- dt
+    }
+    if (length(pieces) == 0L) {
+      return(NULL)
+    }
+    return(data.table::rbindlist(pieces, use.names = TRUE, fill = TRUE))
+  }
+
   NULL
 }
 
@@ -192,7 +316,7 @@ varimp_table <- function(sup) {
 #' @noRd
 make_response_payload <- function(id, result, payload) {
   if (!is.raw(payload)) {
-    cli::cli_abort("`payload` must be a raw vector.")
+    rtemis.core::abort("`payload` must be a raw vector.")
   }
   list(
     header = make_response(id, result),

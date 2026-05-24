@@ -50,10 +50,10 @@
 #' @noRd
 encode_frame <- function(header, payload = NULL) {
   if (!is.list(header)) {
-    cli::cli_abort("`header` must be a named list.")
+    rtemis.core::abort("`header` must be a named list.")
   }
   if (!is.null(payload) && !is.raw(payload)) {
-    cli::cli_abort("`payload` must be a raw vector or NULL.")
+    rtemis.core::abort("`payload` must be a raw vector or NULL.")
   }
 
   if (is.null(header[["v"]])) {
@@ -79,18 +79,24 @@ encode_frame <- function(header, payload = NULL) {
   header_len <- length(json_bytes)
 
   if (header_len > .RTEMISLIVE_HEADER_MAX) {
-    header_max <- .RTEMISLIVE_HEADER_MAX
-    cli::cli_abort(
-      "Header too large ({header_len} bytes, limit {header_max})."
+    rtemis.core::abort(
+      "Header too large (",
+      header_len,
+      " bytes, limit ",
+      .RTEMISLIVE_HEADER_MAX,
+      ")."
     )
   }
 
   payload_len <- if (is.null(payload)) 0L else length(payload)
   total <- 4L + header_len + payload_len
   if (total > .RTEMISLIVE_FRAME_MAX) {
-    frame_max <- .RTEMISLIVE_FRAME_MAX
-    cli::cli_abort(
-      "Frame too large ({total} bytes, limit {frame_max})."
+    rtemis.core::abort(
+      "Frame too large (",
+      total,
+      " bytes, limit ",
+      .RTEMISLIVE_FRAME_MAX,
+      ")."
     )
   }
 
@@ -137,7 +143,7 @@ encode_frame <- function(header, payload = NULL) {
 #' @noRd
 decode_frame <- function(buf) {
   if (!is.raw(buf)) {
-    cli::cli_abort("`buf` must be a raw vector.")
+    rtemis.core::abort("`buf` must be a raw vector.")
   }
 
   n <- length(buf)
@@ -158,14 +164,20 @@ decode_frame <- function(buf) {
     # what kind of payload tripped us up - Arrow IPC streams, garbage,
     # leftover bytes from a desynced previous frame, etc. all have
     # distinctive prefixes.
-    header_max <- .RTEMISLIVE_HEADER_MAX
     preview_n <- min(32L, n)
     preview <- paste(
       sprintf("%02x", as.integer(buf[1L:preview_n])),
       collapse = " "
     )
-    cli::cli_abort(
-      "Malformed frame: header_len {header_len} out of range (limit {header_max}). First {preview_n} bytes: {preview}"
+    rtemis.core::abort(
+      "Malformed frame: header_len ",
+      header_len,
+      " out of range (limit ",
+      .RTEMISLIVE_HEADER_MAX,
+      "). First ",
+      preview_n,
+      " bytes: ",
+      preview
     )
   }
 
@@ -178,17 +190,19 @@ decode_frame <- function(buf) {
   header <- tryCatch(
     jsonlite::fromJSON(rawToChar(header_bytes), simplifyVector = FALSE),
     error = function(e) {
-      # Chain via `parent` so the underlying error message is shown by the
-      # condition system without re-running through cli's glue interpolation
-      # (which would choke on `{` characters in invalid JSON input).
-      cli::cli_abort(
-        "Malformed frame: header JSON could not be parsed.",
+      # Include the parser's message in the wire text so the client sees
+      # what about the JSON was invalid (the previous cli-based version
+      # would choke on `{` characters from invalid input; rtemis.core's
+      # abort() doesn't interpolate, so this is safe).
+      rtemis.core::abort(
+        "Malformed frame: header JSON could not be parsed: ",
+        conditionMessage(e),
         parent = e
       )
     }
   )
   if (!is.list(header)) {
-    cli::cli_abort("Malformed frame: header is not a JSON object.")
+    rtemis.core::abort("Malformed frame: header is not a JSON object.")
   }
 
   payload_info <- header[["payload"]]
@@ -202,21 +216,26 @@ decode_frame <- function(buf) {
   }
 
   if (!is.list(payload_info) || is.null(payload_info[["bytes"]])) {
-    cli::cli_abort("Malformed frame: header `payload` must be {bytes, format}.")
+    rtemis.core::abort(
+      "Malformed frame: header `payload` must be a `{bytes, format}` object."
+    )
   }
 
   payload_len <- as.integer(payload_info[["bytes"]])
   if (is.na(payload_len) || payload_len < 0L) {
-    cli::cli_abort(
+    rtemis.core::abort(
       "Malformed frame: payload bytes is not a non-negative integer."
     )
   }
 
   total <- header_end + payload_len
   if (total > .RTEMISLIVE_FRAME_MAX) {
-    frame_max <- .RTEMISLIVE_FRAME_MAX
-    cli::cli_abort(
-      "Malformed frame: frame size {total} exceeds limit {frame_max}."
+    rtemis.core::abort(
+      "Malformed frame: frame size ",
+      total,
+      " exceeds limit ",
+      .RTEMISLIVE_FRAME_MAX,
+      "."
     )
   }
   if (n < total) {
