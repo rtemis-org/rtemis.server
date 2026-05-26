@@ -80,6 +80,15 @@ disconnect_connection <- function(server, conn) {
   if (exists(cid, envir = reg, inherits = FALSE)) {
     rm(list = cid, envir = reg)
   }
+  rtemis.core::info(
+    "Connection closed: ",
+    cid,
+    if (!is.null(s)) paste0(" (session ", s[["id"]], ")") else "",
+    " (",
+    length(server[["connections"]]),
+    " active).",
+    package = "rtemis.server"
+  )
   invisible(NULL)
 }
 

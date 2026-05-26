@@ -192,6 +192,12 @@ serve <- function(
       headers <- req[["headers"]]
       origin <- if (is.list(headers)) headers[["Origin"]] else headers["Origin"]
       if (!check_origin(origin, server[["origins"]])) {
+        rtemis.core::warn(
+          "Connection rejected: disallowed origin '",
+          origin %||% "<none>",
+          "'.",
+          package = "rtemis.server"
+        )
         ws$close()
         return(invisible(NULL))
       }
@@ -205,6 +211,16 @@ serve <- function(
       conn[["ws_id"]] <- ws_id
       register_connection(server, conn)
       ws_lookup[[as.character(ws_id)]] <- conn
+      rtemis.core::info(
+        "Connection opened: ",
+        conn[["id"]],
+        " (origin '",
+        origin %||% "<none>",
+        "', ",
+        length(server[["connections"]]),
+        " active).",
+        package = "rtemis.server"
+      )
 
       ev <- make_event(
         "ready",
