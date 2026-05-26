@@ -278,6 +278,14 @@ handle_auth <- function(conn, frame, server) {
   presented <- params[["token"]]
   if (!check_token(presented %||% "", server[["token"]] %||% "")) {
     conn[["auth_attempts"]] <- conn[["auth_attempts"]] + 1L
+    rtemis.core::warn(
+      "Auth failed for ",
+      conn[["id"]],
+      " (attempt ",
+      conn[["auth_attempts"]],
+      "/3).",
+      package = "rtemis.server"
+    )
     if (conn[["auth_attempts"]] >= 3L) {
       conn[["close_after_response"]] <- TRUE
     }
@@ -285,6 +293,12 @@ handle_auth <- function(conn, frame, server) {
   }
   conn[["authed"]] <- TRUE
   conn[["auth_attempts"]] <- 0L
+  rtemis.core::info(
+    "Auth ok for ",
+    conn[["id"]],
+    ".",
+    package = "rtemis.server"
+  )
   make_response(req_id, list(connection_id = conn[["id"]]))
 }
 
@@ -388,6 +402,32 @@ handle_algorithms <- function(conn, frame, server) {
       supports_classification = isTRUE(as.logical(tbl[i, "Class"])),
       supports_regression = isTRUE(as.logical(tbl[i, "Reg"])),
       supports_survival = isTRUE(as.logical(tbl[i, "Surv"]))
+    )
+  })
+  make_response(req_id, list(algorithms = algorithms))
+}
+
+
+#' `decomp.algorithms` handler
+#'
+#' Returns the catalogue of decomposition algorithms. Each entry:
+#' `{ name, description }`. Per-algorithm config schemas are fetched
+#' separately via `handle_decomp_algorithm_describe()`
+#' (`decomp.algorithm.describe`).
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+handle_decomp_algorithms <- function(conn, frame, server) {
+  req_id <- frame[["header"]][["id"]] %||% NA_character_
+  tbl <- asNamespace("rtemis")[["decom_algorithms"]]
+  if (!is.data.frame(tbl)) {
+    return(make_response(req_id, list(algorithms = list())))
+  }
+  algorithms <- lapply(seq_len(nrow(tbl)), function(i) {
+    list(
+      name = as.character(tbl[i, 1L]),
+      description = as.character(tbl[i, 2L])
     )
   })
   make_response(req_id, list(algorithms = algorithms))
@@ -552,6 +592,100 @@ handle_algorithm_describe <- function(conn, frame, server) {
     hit <- which(alg_row[["Name"]] == alg_name)[1L]
     if (!is.na(hit)) {
       description <- as.character(alg_row[hit, "Description"])
+    }
+  }
+
+  make_response(
+    req_id,
+    list(
+      name = alg_name,
+      description = description,
+      hyperparameters = hyperparameters
+    )
+  )
+}
+
+
+#' `decomp.algorithm.describe` handler
+#'
+#' Returns the config schema for one decomposition algorithm so the
+#' client can render a configuration form. Schema is built by calling
+#' `setup_<Name>()` with defaults and walking its formals via
+#' `.live_build_schema()`.
+#'
+#' Decomposition configs have no tunable concept (no `Hyperparameters`
+#' S7 class), so `tunable_set = character()`. Default fallbacks are
+#' pulled from the constructed `<Algo>DecompositionConfig`'s `config`
+#' list (the S7 prop holding the resolved values).
+#'
+#' Wire response:
+#' `{ name, description, hyperparameters: [{name, type, default, tunable}, ...] }`
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+handle_decomp_algorithm_describe <- function(conn, frame, server) {
+  req_id <- frame[["header"]][["id"]] %||% NA_character_
+  params <- frame[["header"]][["params"]] %||% list()
+  name <- params[["name"]]
+  if (is.null(name) || !is.character(name) || length(name) != 1L) {
+    rtemis.core::abort(
+      "`name` is required and must be a single algorithm name.",
+      class = "rtemislive_invalid_params"
+    )
+  }
+
+  alg_name <- tryCatch(
+    get_decom_name(name),
+    error = function(e) {
+      rtemis.core::abort(
+        paste0("Unknown decomposition algorithm `", name, "`."),
+        class = "rtemislive_not_found"
+      )
+    }
+  )
+
+  setup_fn_name <- paste0("setup_", alg_name)
+  setup_fn <- tryCatch(
+    get(setup_fn_name, envir = asNamespace("rtemis")),
+    error = function(e) {
+      rtemis.core::abort(
+        paste0("No setup function for `", alg_name, "`."),
+        class = "rtemislive_not_found"
+      )
+    }
+  )
+
+  cfg <- tryCatch(
+    setup_fn(),
+    error = function(e) {
+      rtemis.core::abort(
+        paste0("`", setup_fn_name, "()` failed: ", conditionMessage(e)),
+        class = "rtemislive_internal_error"
+      )
+    }
+  )
+  cfg_values <- if (inherits(cfg, "rtemis::DecompositionConfig")) {
+    prop(cfg, "config")
+  } else {
+    list()
+  }
+
+  hyperparameters <- .live_build_schema(
+    setup_fn,
+    cfg_values,
+    tunable_set = character()
+  )
+
+  alg_tbl <- tryCatch(
+    asNamespace("rtemis")[["decom_algorithms"]],
+    error = function(e) NULL
+  )
+  description <- NA_character_
+  if (is.data.frame(alg_tbl)) {
+    hit <- which(alg_tbl[, 1L] == alg_name)[1L]
+    if (!is.na(hit)) {
+      description <- as.character(alg_tbl[hit, 2L])
     }
   }
 
@@ -925,6 +1059,56 @@ handle_data_delete <- function(conn, frame, server) {
 
 # %% Job handlers ------------------------------------------------------------
 
+#' Collapse list-of-scalars values to atomic vectors
+#'
+#' Frame-level JSON decode uses `simplifyVector = FALSE` (heterogeneous
+#' payloads survive intact), so a JSON array like `[100, 500, 1000]`
+#' arrives as an R *list* of length-1 atomics, not a numeric vector.
+#' rtemis's `setup_<Algorithm>()` validators and downstream tuner
+#' (which branches on `length(x) > 1`) need atomic vectors.
+#'
+#' Walks the named list and, for every value that is a non-empty list
+#' whose elements are all length-1 atomics, replaces it with the
+#' corresponding atomic vector (`unlist`, no names). One-element lists
+#' (e.g. user typed a single value with Tune toggled on) collapse to a
+#' scalar; multi-element lists become a proper vector that drives the
+#' tuner. Values that aren't list-of-scalars are returned unchanged -
+#' notably nested lists like `inbag` survive verbatim.
+#'
+#' Module-scope (not nested inside `handle_train`) so tests can verify
+#' the wire-shape collapse directly without standing up a full handler.
+#'
+#' @param hp Named list as decoded from the wire `hyperparameters`
+#'   payload.
+#'
+#' @return Named list with the same keys; values either left as-is or
+#'   unlisted from scalar-list to atomic vector.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+.collapse_scalar_lists <- function(hp) {
+  if (!is.list(hp)) {
+    return(hp)
+  }
+  lapply(hp, function(v) {
+    if (
+      is.list(v) &&
+        length(v) > 0L &&
+        all(vapply(
+          v,
+          function(x) is.atomic(x) && length(x) == 1L,
+          logical(1)
+        ))
+    ) {
+      unlist(v, use.names = FALSE)
+    } else {
+      v
+    }
+  })
+}
+
+
 #' `train` handler
 #'
 #' Submits a supervised-learning job. Builds a `SuperConfigLive` from the
@@ -997,7 +1181,7 @@ handle_train <- function(conn, frame, server) {
     parse_or_abort(
       list(
         algorithm = algorithm,
-        hyperparameters = params[["hyperparameters"]]
+        hyperparameters = .collapse_scalar_lists(params[["hyperparameters"]])
       ),
       rtemis::.list_to_Hyperparameters,
       "hyperparameters"
@@ -1045,12 +1229,153 @@ handle_train <- function(conn, frame, server) {
     verbosity = 1L
   )
 
+  # `progress` callback: `forward_progress` calls rtemis's internal
+  # `msg()` with `caller = stage`, so the daemon-side msg sink (set up
+  # by `init_daemon_progress`) ships an envelope with the structured
+  # stage name. The wire arrives at the client as
+  # `{stage: "outer_fold", message: "Outer fold 2/5", ...}`. Referencing
+  # `rtemis.server::forward_progress` in the quoted expression makes
+  # mirai load rtemis.server on the daemon, which runs `.onLoad` once
+  # and caches the `msg` lookup - no per-call namespace work.
   job <- submit_job(
     session = s,
     type = "train",
     params = params,
-    expr = quote(rtemis::train(cfg)),
+    expr = quote(
+      rtemis::train(cfg, progress = rtemis.server::forward_progress)
+    ),
     env = list(cfg = cfg),
+    max_concurrent = server[["max_concurrent"]] %||% 8L
+  )
+
+  resp <- list(job_id = job[["id"]], status = job[["status"]])
+  if (identical(job[["status"]], "queued")) {
+    resp[["queue_position"]] <- job_queue_position(job)
+  }
+  make_response(req_id, resp)
+}
+
+
+#' `decomp` handler
+#'
+#' Submits an unsupervised decomposition job. Builds a
+#' `<Algo>DecompositionConfig` from the wire params, optionally subsets
+#' the dataset to a feature list, and dispatches through
+#' `rtemis::decomp()`.
+#'
+#' Wire params (all optional except `data_handle`, `algorithm`):
+#'
+#' - `data_handle` - id of a previously-uploaded dataset on this session
+#' - `algorithm` - character, one of `decomp.algorithms`
+#' - `hyperparameters` - JSON object accepted by `setup_<Algo>()`
+#' - `features` - character[]; subset of columns to decompose. When
+#'   omitted, all columns are used.
+#' - `question` - character; user-provided label for the run
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+handle_decomp <- function(conn, frame, server) {
+  req_id <- frame[["header"]][["id"]] %||% NA_character_
+  params <- frame[["header"]][["params"]] %||% list()
+
+  data_handle <- params[["data_handle"]]
+  algorithm <- params[["algorithm"]]
+  if (is.null(data_handle) || is.null(algorithm)) {
+    rtemis.core::abort(
+      "`data_handle` and `algorithm` are required.",
+      class = "rtemislive_invalid_params"
+    )
+  }
+
+  alg_name <- tryCatch(
+    get_decom_name(algorithm),
+    error = function(e) {
+      rtemis.core::abort(
+        paste0("Unknown decomposition algorithm `", algorithm, "`."),
+        class = "rtemislive_not_found"
+      )
+    }
+  )
+
+  s <- connection_session(conn)
+  data_dt <- get_data(s, data_handle)
+
+  features <- params[["features"]]
+  if (!is.null(features)) {
+    features <- unlist(features, use.names = FALSE)
+    if (
+      !is.character(features) ||
+        length(features) == 0L ||
+        any(!nzchar(features))
+    ) {
+      rtemis.core::abort(
+        "`features` must be a non-empty character vector.",
+        class = "rtemislive_invalid_params"
+      )
+    }
+    missing_cols <- setdiff(features, colnames(data_dt))
+    if (length(missing_cols) > 0L) {
+      rtemis.core::abort(
+        paste0(
+          "Features not in dataset: ",
+          paste(missing_cols, collapse = ", "),
+          "."
+        ),
+        class = "rtemislive_invalid_params"
+      )
+    }
+    x <- data_dt[, features, with = FALSE]
+  } else {
+    x <- data_dt
+  }
+
+  # Build `<Algo>DecompositionConfig` via `setup_<Algo>(...)`. The wire
+  # `hyperparameters` payload is a flat name->value map matching the
+  # setup function's formals; scalar JSON arrays are collapsed before
+  # `do.call` so atomic args arrive as scalars rather than length-1
+  # lists.
+  setup_fn_name <- paste0("setup_", alg_name)
+  setup_fn <- tryCatch(
+    get(setup_fn_name, envir = asNamespace("rtemis")),
+    error = function(e) {
+      rtemis.core::abort(
+        paste0("No setup function for `", alg_name, "`."),
+        class = "rtemislive_internal_error"
+      )
+    }
+  )
+  hp <- if (is.null(params[["hyperparameters"]])) {
+    list()
+  } else {
+    .collapse_scalar_lists(params[["hyperparameters"]])
+  }
+  cfg <- tryCatch(
+    do.call(setup_fn, as.list(hp)),
+    error = function(e) {
+      rtemis.core::abort(
+        "Could not build decomposition config: ",
+        conditionMessage(e),
+        parent = e,
+        class = "rtemislive_invalid_params"
+      )
+    }
+  )
+
+  # No `progress` callback: rtemis::decomp() has no fold-boundary
+  # checkpoints. The daemon-side msg sink (set up by
+  # `init_daemon_progress`) still ships every internal `msg()` call from
+  # `decomp()` (data summary, "Decomposing with PCA...", outro) as a
+  # progress envelope, so the browser gets inline status without any
+  # per-handler wiring.
+  job <- submit_job(
+    session = s,
+    type = "decomp",
+    params = params,
+    expr = quote(
+      rtemis::decomp(x, algorithm = alg_name, config = cfg, verbosity = 1L)
+    ),
+    env = list(x = x, alg_name = alg_name, cfg = cfg),
     max_concurrent = server[["max_concurrent"]] %||% 8L
   )
 
@@ -1240,11 +1565,67 @@ handle_job_result <- function(conn, frame, server) {
     }
     return(make_response(req_id, out))
   }
+  if (slice == "transformed") {
+    if (!inherits(result, "rtemis::Decomposition")) {
+      rtemis.core::abort(
+        "`transformed` slice requires a `Decomposition` result.",
+        class = "rtemislive_invalid_params"
+      )
+    }
+    tr_dt <- transformed_table(result)
+    if (is.null(tr_dt) || NROW(tr_dt) == 0L) {
+      return(make_response(
+        req_id,
+        list(rows = 0L, cols = 0L, columns = list(), format = "arrow-ipc")
+      ))
+    }
+    payload <- encode_arrow_ipc(tr_dt)
+    return(make_response_payload(
+      req_id,
+      list(
+        rows = NROW(tr_dt),
+        cols = NCOL(tr_dt),
+        columns = names(tr_dt),
+        format = "arrow-ipc"
+      ),
+      payload
+    ))
+  }
+  if (slice == "loadings") {
+    if (!inherits(result, "rtemis::Decomposition")) {
+      rtemis.core::abort(
+        "`loadings` slice requires a `Decomposition` result.",
+        class = "rtemislive_invalid_params"
+      )
+    }
+    ld_dt <- loadings_table(result)
+    if (is.null(ld_dt) || NROW(ld_dt) == 0L) {
+      # Algorithm has no loadings concept (UMAP / tSNE / Isomap) or the
+      # backend didn't expose them. Same empty-pointer convention as
+      # `varimp` for algorithms without varimp.
+      return(make_response(
+        req_id,
+        list(rows = 0L, cols = 0L, columns = list(), format = "arrow-ipc")
+      ))
+    }
+    payload <- encode_arrow_ipc(ld_dt)
+    return(make_response_payload(
+      req_id,
+      list(
+        rows = NROW(ld_dt),
+        cols = NCOL(ld_dt),
+        columns = names(ld_dt),
+        format = "arrow-ipc"
+      ),
+      payload
+    ))
+  }
   rtemis.core::abort(
     paste0(
       "Unsupported slice `",
       slice,
-      "`. Use `summary`, `raw`, `varimp`, `predictions`, or `metrics`."
+      "`. Use `summary`, `raw`, `varimp`, `predictions`, `metrics`, ",
+      "`transformed`, or `loadings`."
     ),
     class = "rtemislive_invalid_params"
   )
@@ -1296,6 +1677,14 @@ handle_job_delete <- function(conn, frame, server) {
   ),
   "algorithm.describe" = list(
     handler = handle_algorithm_describe,
+    requires = "authed"
+  ),
+  "decomp.algorithms" = list(
+    handler = handle_decomp_algorithms,
+    requires = "authed"
+  ),
+  "decomp.algorithm.describe" = list(
+    handler = handle_decomp_algorithm_describe,
     requires = "authed"
   ),
   "resampler.describe" = list(
@@ -1364,6 +1753,10 @@ handle_job_delete <- function(conn, frame, server) {
   ),
   "train" = list(
     handler = handle_train,
+    requires = c("authed", "attached")
+  ),
+  "decomp" = list(
+    handler = handle_decomp,
     requires = c("authed", "attached")
   ),
   "job.list" = list(
