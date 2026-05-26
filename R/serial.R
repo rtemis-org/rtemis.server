@@ -273,7 +273,7 @@ varimp_table <- function(sup) {
         next
       }
       dt <- data.table::copy(dt)
-      dt[, fold := fold_labels[i]]
+      dt[, let(fold = fold_labels[i])]
       # Move `fold` to the second column for stable display order
       # (`variable` stays first).
       cols <- names(dt)
@@ -292,6 +292,94 @@ varimp_table <- function(sup) {
   }
 
   NULL
+}
+
+
+# %% Decomposition slices ---------------------------------------------------
+
+#' Projection matrix for the `transformed` slice
+#'
+#' Extracts `prop(result, "transformed")` from a `Decomposition` and
+#' wraps it as a data.table. Column names are preserved when the
+#' decomposition backend names them (e.g. `PC1`, `PC2`, ...); otherwise
+#' synthesised as `V1`, `V2`, ...
+#'
+#' @param dec `Decomposition`.
+#'
+#' @return data.table or NULL when no projection is available.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+transformed_table <- function(dec) {
+  m <- tryCatch(prop(dec, "transformed"), error = function(e) NULL)
+  if (is.null(m)) {
+    return(NULL)
+  }
+  m <- as.matrix(m)
+  if (is.null(colnames(m))) {
+    colnames(m) <- paste0("V", seq_len(NCOL(m)))
+  }
+  data.table::as.data.table(m)
+}
+
+
+#' Loadings matrix for the `loadings` slice
+#'
+#' Extracts the algorithm-specific loadings (interpretable variables ×
+#' components matrix) from a `Decomposition` and wraps it as a
+#' data.table with a leading `variable` column. Returns NULL for
+#' algorithms that have no loadings concept (UMAP, tSNE, Isomap).
+#'
+#' Per-algorithm sources (see `R/decomp_*.R`):
+#'
+#' - PCA: `decom$rotation` (variables × PCs)
+#' - ICA: `decom$A` (mixing matrix; sources × variables, transposed)
+#' - NMF: `NMF::basis(decom)` (variables × components)
+#'
+#' @param dec `Decomposition`.
+#'
+#' @return data.table or NULL when loadings are not defined for the
+#'   algorithm.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+loadings_table <- function(dec) {
+  algo <- tryCatch(prop(dec, "algorithm"), error = function(e) NA_character_)
+  decom <- tryCatch(prop(dec, "decom"), error = function(e) NULL)
+  if (is.null(decom) || is.na(algo)) {
+    return(NULL)
+  }
+
+  m <- switch(
+    algo,
+    PCA = decom[["rotation"]],
+    ICA = {
+      a <- decom[["A"]]
+      if (is.null(a)) NULL else t(a)
+    },
+    NMF = tryCatch(
+      asNamespace("NMF")[["basis"]](decom),
+      error = function(e) NULL
+    ),
+    NULL
+  )
+  if (is.null(m)) {
+    return(NULL)
+  }
+  m <- as.matrix(m)
+  if (is.null(colnames(m))) {
+    colnames(m) <- paste0("V", seq_len(NCOL(m)))
+  }
+  varnames <- rownames(m)
+  if (is.null(varnames)) {
+    varnames <- paste0("X", seq_len(NROW(m)))
+  }
+  dt <- data.table::as.data.table(m)
+  dt[, let(variable = varnames)]
+  data.table::setcolorder(dt, c("variable", setdiff(names(dt), "variable")))
+  dt
 }
 
 
@@ -330,7 +418,15 @@ make_response_payload <- function(id, result, payload) {
 # Names of fields stripped from the summary slice - they have dedicated
 # slices that ship as Arrow IPC. Listed both for `Supervised`
 # (`varimp`) and `SupervisedRes` (`varimp_per_resample`).
-.SUMMARY_STRIP_TOP <- c("varimp", "varimp_per_resample")
+# For `Decomposition`: `transformed` is the projection matrix and `decom`
+# the raw backend model - both can be many MB and have dedicated slices
+# (`transformed`, `loadings`).
+.SUMMARY_STRIP_TOP <- c(
+  "varimp",
+  "varimp_per_resample",
+  "transformed",
+  "decom"
+)
 
 # Inside `MetricsRes`-shaped slots, `res_metrics` is the per-resample
 # breakdown - replaceable from `varimp` slice queries downstream, and
