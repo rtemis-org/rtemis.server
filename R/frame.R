@@ -191,7 +191,7 @@ decode_frame <- function(buf) {
     jsonlite::fromJSON(rawToChar(header_bytes), simplifyVector = FALSE),
     error = function(e) {
       # Include the parser's message in the wire text so the client sees
-      # what about the JSON was invalid (the previous cli-based version
+      # what about the JSON was invalid (unlike cli which
       # would choke on `{` characters from invalid input; rtemis.core's
       # abort() doesn't interpolate, so this is safe).
       rtemis.core::abort(

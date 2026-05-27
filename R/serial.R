@@ -383,6 +383,34 @@ loadings_table <- function(dec) {
 }
 
 
+#' Cluster assignments for the `assignments` slice
+#'
+#' Extracts `prop(result, "clusters")` from a `Clustering` and wraps it
+#' as a one-column data.table named `cluster`. Row order matches the
+#' input data row order, so the client can left-join the assignment
+#' column back to the parent table via `rowid` (analogous to the
+#' decomposition `transformed` slice).
+#'
+#' @param clu `Clustering`.
+#'
+#' @return data.table with a single integer column `cluster`, or NULL
+#'   when no assignments are available.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+assignments_table <- function(clu) {
+  v <- tryCatch(prop(clu, "clusters"), error = function(e) NULL)
+  if (is.null(v)) {
+    return(NULL)
+  }
+  if (is.list(v)) {
+    v <- unlist(v, use.names = FALSE)
+  }
+  data.table::data.table(cluster = as.integer(v))
+}
+
+
 # %% Response-with-payload helper -------------------------------------------
 
 #' Build a `{header, payload}` response envelope
@@ -425,7 +453,9 @@ make_response_payload <- function(id, result, payload) {
   "varimp",
   "varimp_per_resample",
   "transformed",
-  "decom"
+  "decom",
+  "clusters",
+  "clust"
 )
 
 # Inside `MetricsRes`-shaped slots, `res_metrics` is the per-resample

@@ -17,7 +17,7 @@
 # socket so daemons can connect across processes. `inproc://` only works
 # inside a single R process and is useful for tests.
 
-# %% Progress URL ------------------------------------------------------------
+# %% Progress URL ----------------------------------------------------------------------------------
 
 #' Build a default IPC URL for the progress channel
 #'
@@ -34,7 +34,7 @@ default_progress_url <- function() {
 }
 
 
-# %% Host-side: bind / close / drain -----------------------------------------
+# %% Host-side: bind / close / drain ---------------------------------------------------------------
 
 #' Bind the host-side progress pull socket
 #'
@@ -121,7 +121,7 @@ drain_progress_socket <- function(sock) {
 }
 
 
-# %% Routing -----------------------------------------------------------------
+# %% Routing ---------------------------------------------------------------------------------------
 
 #' Find the session that owns a given job_id
 #'
@@ -189,11 +189,16 @@ route_progress <- function(messages, send_event = NULL) {
     if (is.null(job)) {
       next
     }
+    # Daemon-forwarded msg() text carries the ANSI styling rtemis uses
+    # for terminal output. Strip it once at the wire boundary so neither
+    # the recorded snapshot nor the `job.progress` event leaks escape
+    # sequences into the browser.
+    clean_msg <- rtemis.core::strip_ansi(m[["message"]] %||% "")
     record_job_progress(
       job,
       list(
         stage = m[["caller"]],
-        message = m[["message"]],
+        message = clean_msg,
         ts = m[["ts"]],
         level = m[["level"]]
       )
@@ -203,7 +208,7 @@ route_progress <- function(messages, send_event = NULL) {
       data = list(
         job_id = jid,
         stage = m[["caller"]],
-        message = m[["message"]],
+        message = clean_msg,
         ts = m[["ts"]],
         level = m[["level"]]
       )
@@ -219,7 +224,7 @@ route_progress <- function(messages, send_event = NULL) {
 }
 
 
-# %% Daemon-side setup -------------------------------------------------------
+# %% Daemon-side setup -----------------------------------------------------------------------------
 
 #' Configure daemons to forward `msg()` calls to the host
 #'
@@ -250,50 +255,137 @@ init_daemon_progress <- function(url) {
     rtemis.core::abort("`url` must be a single non-empty character string.")
   }
 
-  # NOTE on the inline expression below:
+  # IMPORTANT: mirai::everywhere() (as of mirai 2.7) only persists
+  # changes to the daemon's `globalenv()`, loaded packages, and
+  # options - this is documented behavior. Writes into a package's
+  # namespace env (e.g. `asNamespace("rtemis")$live$x <- ...`) and
+  # plain top-level `<-` assignments inside the everywhere block are
+  # silently dropped after the call returns. An earlier version of this
+  # function installed the msg sink + socket directly into rtemis's
+  # `live` env from inside `everywhere`, which appeared to work but in
+  # fact left every daemon with NULL sink/socket - no progress events
+  # ever shipped.
   #
-  # - We reach the internal `live` env via `asNamespace("rtemis")$live`
-  #   because `live` is not exported.
-  # - We bind it to a local variable so the sink closure can mutate the
-  #   env's contents without R interpreting `ns$live$x <- v` as a
-  #   namespace rebinding (which fails on locked installed-package
-  #   namespaces).
-  # - `nanonext::send()` is non-blocking (`block = FALSE`); if the host
-  #   pull buffer fills (browser stalled, slow link), messages are
-  #   dropped rather than blocking training.
+  # Workaround: use `everywhere` only to plant the URL in the daemon's
+  # `globalenv()` (which IS persisted), then let `ensure_daemon_sink()`
+  # install the socket + sink lazily at job start - that runs inside a
+  # regular `mirai()` task whose namespace writes DO persist. After the
+  # first job on a daemon, subsequent jobs find the sink installed and
+  # skip the setup.
+  # NB: pass an UNQUOTED expression. `mirai::everywhere()` runs
+  # `substitute()` on `.expr` internally, so handing it `quote({...})`
+  # gives it a language object that it never evaluates - the original
+  # bug that wedged this whole channel. `everywhere({...})` works.
   mirai::everywhere(
-    quote({
-      live_env <- asNamespace("rtemis")$live
-      sock <- nanonext::socket("push", dial = url)
-      live_env$rtemislive_progress_socket <- sock
-
-      rtemis::set_msg_sink(function(m) {
-        s <- live_env$rtemislive_progress_socket
-        if (is.null(s)) {
-          return(invisible(NULL))
-        }
-        payload <- list(
-          job_id = live_env$rtemislive_job_id,
-          caller = m$caller,
-          message = m$text,
-          ts = m$ts,
-          level = m$level
-        )
-        txt <- jsonlite::toJSON(
-          payload,
-          auto_unbox = TRUE,
-          na = "null",
-          null = "null"
-        )
-        nanonext::send(
-          s,
-          charToRaw(as.character(txt)),
-          mode = "raw",
-          block = FALSE
-        )
-      })
-      invisible(NULL)
-    }),
+    {
+      assign(".rtemislive_progress_url", url, envir = globalenv())
+    },
     url = url
   )
+}
+
+
+#' Lazily install the daemon-side msg sink + push socket
+#'
+#' Runs as the first action of every wrapped job expression (see
+#' `submit_job` in jobs.R). On the first call per daemon, opens a
+#' nanonext push socket dialing the URL planted by
+#' `init_daemon_progress` and installs an `rtemis::set_msg_sink()`
+#' that forwards every `msg()` call as a JSON envelope on the socket.
+#' On subsequent calls (sink already installed), short-circuits.
+#'
+#' Lives in the daemon's `live` env (a namespace env in rtemis) - those
+#' writes persist across regular `mirai()` tasks but, critically, NOT
+#' across `mirai::everywhere()` calls. See `init_daemon_progress` for
+#' the full rationale.
+#'
+#' Exported (rather than internal) so the per-job wrapped expression
+#' in `submit_job` can reference it as `rtemis.server::ensure_daemon_sink`
+#' without resorting to `:::` (CRAN-discouraged) or `getFromNamespace`
+#' (extra per-job lookup). It is not part of the user-facing API.
+#'
+#' @return Invisible `NULL`.
+#'
+#' @author EDG
+#' @keywords internal
+#' @export
+ensure_daemon_sink <- function() {
+  live_env <- asNamespace("rtemis")[["live"]]
+  if (!is.null(live_env[["msg_sink"]])) {
+    return(invisible(NULL))
+  }
+  url <- get0(".rtemislive_progress_url", envir = globalenv())
+  if (is.null(url) || !nzchar(url)) {
+    return(invisible(NULL))
+  }
+  sock <- nanonext::socket("push", dial = url)
+  live_env[["rtemislive_progress_socket"]] <- sock
+  rtemis::set_msg_sink(function(m) {
+    s <- live_env[["rtemislive_progress_socket"]]
+    if (is.null(s)) {
+      return(invisible(NULL))
+    }
+    payload <- list(
+      job_id = live_env[["rtemislive_job_id"]],
+      caller = m$caller,
+      message = m$text,
+      ts = m$ts,
+      level = m$level
+    )
+    txt <- jsonlite::toJSON(
+      payload,
+      auto_unbox = TRUE,
+      na = "null",
+      null = "null"
+    )
+    nanonext::send(
+      s,
+      charToRaw(as.character(txt)),
+      mode = "raw",
+      block = FALSE
+    )
+  })
+  invisible(NULL)
+}
+
+
+# %% Progress forwarder for rtemis::train ----------------------------------------------------------
+
+#' Forward a `rtemis::train` progress checkpoint over the msg sink
+#'
+#' Thin adapter passed as `progress = ` to `rtemis::train()`. Calls
+#' rtemis's internal `msg()` with `caller = stage`, so the daemon-side
+#' sink (installed by `init_daemon_progress`) ships an envelope whose
+#' `caller` field carries the structured stage name (e.g.
+#' `"outer_fold"`). The host turns that into a `job.progress` event with
+#' `data$stage` set, which the UI can route on without text-matching
+#' the message.
+#'
+#' `msg` is unexported from rtemis; the reference is bound at package
+#' source-eval time in `00_init.R` via `getFromNamespace`, so calling
+#' `msg()` here avoids both `rtemis:::msg` (R CMD check NOTE) and any
+#' per-call namespace lookup.
+#'
+#' Designed to be referenced as `rtemis.server::forward_progress` inside
+#' the mirai job expression - mirai loads rtemis.server on the daemon
+#' on first use, sourcing `00_init.R` once, so the `msg` binding exists
+#' before the callback is ever invoked.
+#'
+#' @param stage Character scalar: Structured stage name. Becomes the
+#'   `caller` field on the wire envelope (e.g. `"outer_fold"`).
+#' @param current Integer: 1-based index of the checkpoint. Unused by
+#'   this adapter directly (encoded into `message` upstream), kept in
+#'   the signature so it matches the rtemis::train `progress` contract.
+#' @param total Integer: Total checkpoints. Same as `current` - present
+#'   to match the contract.
+#' @param message Character scalar: Human-readable line, e.g.
+#'   `"Outer fold 2/5"`. Becomes the envelope's `text` field.
+#'
+#' @return Invisible `NULL`.
+#'
+#' @author EDG
+#' @export
+forward_progress <- function(stage, current, total, message) {
+  msg(message, caller = stage)
+  invisible(NULL)
 }

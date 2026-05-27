@@ -201,8 +201,10 @@ test_that("decomp + job.status + job.result happy path (PCA)", {
   expect_equal(result[["result"]][[".class"]], "Decomposition")
   expect_equal(result[["result"]][["algorithm"]], "PCA")
   # Heavy fields stripped from summary
-  expect_true(is.null(result[["result"]][["transformed"]]) ||
-    isTRUE(result[["result"]][["transformed"]][["available"]]))
+  expect_true(
+    is.null(result[["result"]][["transformed"]]) ||
+      isTRUE(result[["result"]][["transformed"]][["available"]])
+  )
 
   # `transformed` slice: arrow IPC pointer with 40 rows × 2 cols. Binary
   # slices come back as `list(header, payload)` (unwrapped by the loop

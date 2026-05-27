@@ -179,6 +179,72 @@ test_that("algorithms returns a list of available supervised algorithms", {
   expect_true("LightRF" %in% names)
 })
 
+# %% .collapse_scalar_lists --------------------------------------------------
+# Frame-level JSON decode is `simplifyVector = FALSE`, so multi-value
+# tunable specs like `[100, 500, 1000]` land as R *lists* of length-1
+# atomics. handle_train must collapse these to atomic vectors before
+# passing to rtemis or `setup_<Algorithm>()` aborts and `needs_tuning`
+# can never detect a tuning request. Regression test for the UI Tune
+# workflow that was silently broken until 2026-05.
+
+test_that(".collapse_scalar_lists unwraps scalar lists into atomic vectors", {
+  fn <- rtemis.server:::.collapse_scalar_lists
+
+  # multi-value tunable
+  out <- fn(list(num_trees = list(100L, 500L, 1000L)))
+  expect_type(out[["num_trees"]], "integer")
+  expect_equal(out[["num_trees"]], c(100L, 500L, 1000L))
+
+  # single-value tunable (Tune toggled on with one entry)
+  out <- fn(list(num_trees = list(500L)))
+  expect_type(out[["num_trees"]], "integer")
+  expect_equal(out[["num_trees"]], 500L)
+
+  # already-atomic scalar (Tune off) is left alone
+  out <- fn(list(num_trees = 500L))
+  expect_equal(out[["num_trees"]], 500L)
+
+  # character multi
+  out <- fn(list(splitrule = list("variance", "extratrees")))
+  expect_equal(out[["splitrule"]], c("variance", "extratrees"))
+
+  # mixed payload: scalar lists collapse, real lists pass through
+  out <- fn(list(
+    num_trees = list(100L, 500L),
+    inbag = list(list(1L, 2L), list(3L, 4L))
+  ))
+  expect_equal(out[["num_trees"]], c(100L, 500L))
+  # Nested-list value (inbag is genuinely a list-of-lists) must survive
+  # untouched.
+  expect_true(is.list(out[["inbag"]]))
+  expect_length(out[["inbag"]], 2L)
+
+  # empty list passes through (no zero-element atomic vector emitted)
+  out <- fn(list(case_weights = list()))
+  expect_equal(out[["case_weights"]], list())
+
+  # non-list top-level input returned as-is
+  expect_equal(fn(NULL), NULL)
+  expect_equal(fn(42L), 42L)
+})
+
+test_that(".collapse_scalar_lists output drives rtemis tuning detection", {
+  # End-to-end shape check: collapsed multi-value spec round-trips
+  # through `.list_to_Hyperparameters` and `needs_tuning` returns TRUE.
+  raw <- jsonlite::fromJSON(
+    '{"num_trees": [100, 500, 1000]}',
+    simplifyVector = FALSE
+  )
+  collapsed <- rtemis.server:::.collapse_scalar_lists(raw)
+  hp <- rtemis:::.list_to_Hyperparameters(list(
+    algorithm = "Ranger",
+    hyperparameters = collapsed
+  ))
+  expect_true(inherits(hp, "rtemis::Hyperparameters"))
+  expect_true(rtemis:::needs_tuning(hp))
+})
+
+
 test_that("algorithm.describe returns a hyperparameter schema for GLM", {
   server <- make_server()
   conn <- authed_conn(server)

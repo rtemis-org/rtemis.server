@@ -116,6 +116,11 @@ submit_job <- function(
   #    locked. Mutating the env's *contents* via a local reference
   #    sidesteps the lock.
   wrapped <- bquote({
+    # Lazily install the msg sink + push socket on this daemon if not
+    # already done. Required because `mirai::everywhere` (used at
+    # serve() startup) cannot persist writes into rtemis's namespace
+    # env - see init_daemon_progress for the full rationale.
+    rtemis.server::ensure_daemon_sink()
     live_env <- asNamespace("rtemis")$live
     prev <- live_env$rtemislive_job_id
     live_env$rtemislive_job_id <- .(job_id)
@@ -156,6 +161,18 @@ submit_job <- function(
 
   session[["jobs"]][[job_id]] <- job
   touch_session(session)
+  rtemis.core::info(
+    "Job ",
+    job_id,
+    " submitted (",
+    type,
+    ", ",
+    job[["status"]],
+    ", session ",
+    session[["id"]],
+    ").",
+    package = "rtemis.server"
+  )
   job
 }
 
@@ -228,6 +245,14 @@ promote_queued_jobs <- function(server) {
           )
           emit_event_to_session(server, s, ev)
         }
+        rtemis.core::info(
+          "Job ",
+          job[["id"]],
+          " started (",
+          job[["type"]] %||% "?",
+          ").",
+          package = "rtemis.server"
+        )
         promoted <- promoted + 1L
       },
       error = function(e) {
@@ -410,6 +435,38 @@ finalize_job <- function(job) {
     }
   }
 
+  dur <- if (!is.null(job[["started_at"]])) {
+    sprintf(
+      " in %.2fs",
+      as.numeric(
+        difftime(job[["completed_at"]], job[["started_at"]], units = "secs")
+      )
+    )
+  } else {
+    ""
+  }
+  if (identical(job[["status"]], "failed")) {
+    rtemis.core::warn(
+      "Job ",
+      job[["id"]],
+      " failed",
+      dur,
+      ": ",
+      job[["error"]][["message"]],
+      package = "rtemis.server"
+    )
+  } else {
+    rtemis.core::info(
+      "Job ",
+      job[["id"]],
+      " ",
+      job[["status"]],
+      dur,
+      ".",
+      package = "rtemis.server"
+    )
+  }
+
   invisible(job)
 }
 
@@ -477,6 +534,12 @@ cancel_job <- function(session, job_id) {
       message = "Job cancelled before start."
     )
     touch_session(session)
+    rtemis.core::info(
+      "Job ",
+      job_id,
+      " cancelled before start.",
+      package = "rtemis.server"
+    )
     return(TRUE)
   }
   job[["status"]] <- "cancelling"
@@ -490,6 +553,12 @@ cancel_job <- function(session, job_id) {
     }
   )
   touch_session(session)
+  rtemis.core::info(
+    "Job ",
+    job_id,
+    " cancellation requested.",
+    package = "rtemis.server"
+  )
   TRUE
 }
 

@@ -9,6 +9,14 @@
 #
 # `live` is unexported from rtemis on purpose (internal mutable state),
 # so we reach it via `asNamespace("rtemis")` rather than `rtemis::live`.
+#
+# Note: lazy bindings to rtemis's other internals (e.g. `msg`,
+# `get_alg_name`) live in `00_init.R` as top-level `getFromNamespace`
+# calls - that file is sourced first (alphabetical) so the bindings
+# exist for the rest of the package. `live` needs `.onLoad` because
+# `asNamespace("rtemis")` returns an env (mutable shared state) and
+# we want the binding established once R has fully resolved rtemis's
+# namespace, not at source-eval time.
 
 live <- NULL
 

@@ -17,6 +17,7 @@ to a persistent R session running rtemis. See \code{vignette("rtemislive")}
 Useful links:
 \itemize{
   \item \url{https://www.rtemis.org}
+  \item \url{https://live.rtemis.org}
   \item Report bugs at \url{https://github.com/rtemis-org/rtemis.server/issues}
 }
 

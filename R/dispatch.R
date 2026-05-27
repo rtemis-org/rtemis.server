@@ -700,6 +700,127 @@ handle_decomp_algorithm_describe <- function(conn, frame, server) {
 }
 
 
+#' `cluster.algorithms` handler
+#'
+#' Returns the catalogue of clustering algorithms. Each entry:
+#' `{ name, description }`. Per-algorithm config schemas are fetched
+#' separately via `handle_cluster_algorithm_describe()`
+#' (`cluster.algorithm.describe`). Parallel to
+#' `handle_decomp_algorithms()`.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+handle_cluster_algorithms <- function(conn, frame, server) {
+  req_id <- frame[["header"]][["id"]] %||% NA_character_
+  tbl <- asNamespace("rtemis")[["clust_algorithms"]]
+  if (!is.data.frame(tbl)) {
+    return(make_response(req_id, list(algorithms = list())))
+  }
+  algorithms <- lapply(seq_len(nrow(tbl)), function(i) {
+    list(
+      name = as.character(tbl[i, 1L]),
+      description = as.character(tbl[i, 2L])
+    )
+  })
+  make_response(req_id, list(algorithms = algorithms))
+}
+
+
+#' `cluster.algorithm.describe` handler
+#'
+#' Returns the config schema for one clustering algorithm so the
+#' client can render a configuration form. Schema is built by calling
+#' `setup_<Name>()` with defaults and walking its formals via
+#' `.live_build_schema()`.
+#'
+#' Clustering configs have no tunable concept, so
+#' `tunable_set = character()`. Default fallbacks are pulled from the
+#' constructed `<Algo>ClusteringConfig`'s `config` list. Parallel to
+#' `handle_decomp_algorithm_describe()`.
+#'
+#' Wire response:
+#' `{ name, description, hyperparameters: [{name, type, default, tunable}, ...] }`
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+handle_cluster_algorithm_describe <- function(conn, frame, server) {
+  req_id <- frame[["header"]][["id"]] %||% NA_character_
+  params <- frame[["header"]][["params"]] %||% list()
+  name <- params[["name"]]
+  if (is.null(name) || !is.character(name) || length(name) != 1L) {
+    rtemis.core::abort(
+      "`name` is required and must be a single algorithm name.",
+      class = "rtemislive_invalid_params"
+    )
+  }
+
+  alg_name <- tryCatch(
+    asNamespace("rtemis")[["get_clust_name"]](name),
+    error = function(e) {
+      rtemis.core::abort(
+        paste0("Unknown clustering algorithm `", name, "`."),
+        class = "rtemislive_not_found"
+      )
+    }
+  )
+
+  setup_fn_name <- paste0("setup_", alg_name)
+  setup_fn <- tryCatch(
+    get(setup_fn_name, envir = asNamespace("rtemis")),
+    error = function(e) {
+      rtemis.core::abort(
+        paste0("No setup function for `", alg_name, "`."),
+        class = "rtemislive_not_found"
+      )
+    }
+  )
+
+  cfg <- tryCatch(
+    setup_fn(),
+    error = function(e) {
+      rtemis.core::abort(
+        paste0("`", setup_fn_name, "()` failed: ", conditionMessage(e)),
+        class = "rtemislive_internal_error"
+      )
+    }
+  )
+  cfg_values <- if (inherits(cfg, "rtemis::ClusteringConfig")) {
+    prop(cfg, "config")
+  } else {
+    list()
+  }
+
+  hyperparameters <- .live_build_schema(
+    setup_fn,
+    cfg_values,
+    tunable_set = character()
+  )
+
+  alg_tbl <- tryCatch(
+    asNamespace("rtemis")[["clust_algorithms"]],
+    error = function(e) NULL
+  )
+  description <- NA_character_
+  if (is.data.frame(alg_tbl)) {
+    hit <- which(alg_tbl[, 1L] == alg_name)[1L]
+    if (!is.na(hit)) {
+      description <- as.character(alg_tbl[hit, 2L])
+    }
+  }
+
+  make_response(
+    req_id,
+    list(
+      name = alg_name,
+      description = description,
+      hyperparameters = hyperparameters
+    )
+  )
+}
+
+
 #' `resampler.describe` handler
 #'
 #' Returns the schema for `setup_Resampler()` so the client can render a
@@ -1387,6 +1508,126 @@ handle_decomp <- function(conn, frame, server) {
 }
 
 
+#' `cluster` handler
+#'
+#' Submits an unsupervised clustering job. Builds a
+#' `<Algo>ClusteringConfig` from the wire params, optionally subsets
+#' the dataset to a feature list, and dispatches through
+#' `rtemis::cluster()`. Parallel to `handle_decomp()`.
+#'
+#' Wire params (all optional except `data_handle`, `algorithm`):
+#'
+#' - `data_handle` - id of a previously-uploaded dataset on this session
+#' - `algorithm` - character, one of `cluster.algorithms`
+#' - `hyperparameters` - JSON object accepted by `setup_<Algo>()`
+#' - `features` - character[]; subset of columns to cluster on. When
+#'   omitted, all columns are used.
+#' - `question` - character; user-provided label for the run
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+handle_cluster <- function(conn, frame, server) {
+  req_id <- frame[["header"]][["id"]] %||% NA_character_
+  params <- frame[["header"]][["params"]] %||% list()
+
+  data_handle <- params[["data_handle"]]
+  algorithm <- params[["algorithm"]]
+  if (is.null(data_handle) || is.null(algorithm)) {
+    rtemis.core::abort(
+      "`data_handle` and `algorithm` are required.",
+      class = "rtemislive_invalid_params"
+    )
+  }
+
+  alg_name <- tryCatch(
+    asNamespace("rtemis")[["get_clust_name"]](algorithm),
+    error = function(e) {
+      rtemis.core::abort(
+        paste0("Unknown clustering algorithm `", algorithm, "`."),
+        class = "rtemislive_not_found"
+      )
+    }
+  )
+
+  s <- connection_session(conn)
+  data_dt <- get_data(s, data_handle)
+
+  features <- params[["features"]]
+  if (!is.null(features)) {
+    features <- unlist(features, use.names = FALSE)
+    if (
+      !is.character(features) ||
+        length(features) == 0L ||
+        any(!nzchar(features))
+    ) {
+      rtemis.core::abort(
+        "`features` must be a non-empty character vector.",
+        class = "rtemislive_invalid_params"
+      )
+    }
+    missing_cols <- setdiff(features, colnames(data_dt))
+    if (length(missing_cols) > 0L) {
+      rtemis.core::abort(
+        paste0(
+          "Features not in dataset: ",
+          paste(missing_cols, collapse = ", "),
+          "."
+        ),
+        class = "rtemislive_invalid_params"
+      )
+    }
+    x <- data_dt[, features, with = FALSE]
+  } else {
+    x <- data_dt
+  }
+
+  setup_fn_name <- paste0("setup_", alg_name)
+  setup_fn <- tryCatch(
+    get(setup_fn_name, envir = asNamespace("rtemis")),
+    error = function(e) {
+      rtemis.core::abort(
+        paste0("No setup function for `", alg_name, "`."),
+        class = "rtemislive_internal_error"
+      )
+    }
+  )
+  hp <- if (is.null(params[["hyperparameters"]])) {
+    list()
+  } else {
+    .collapse_scalar_lists(params[["hyperparameters"]])
+  }
+  cfg <- tryCatch(
+    do.call(setup_fn, as.list(hp)),
+    error = function(e) {
+      rtemis.core::abort(
+        "Could not build clustering config: ",
+        conditionMessage(e),
+        parent = e,
+        class = "rtemislive_invalid_params"
+      )
+    }
+  )
+
+  job <- submit_job(
+    session = s,
+    type = "cluster",
+    params = params,
+    expr = quote(
+      rtemis::cluster(x, algorithm = alg_name, config = cfg, verbosity = 1L)
+    ),
+    env = list(x = x, alg_name = alg_name, cfg = cfg),
+    max_concurrent = server[["max_concurrent"]] %||% 8L
+  )
+
+  resp <- list(job_id = job[["id"]], status = job[["status"]])
+  if (identical(job[["status"]], "queued")) {
+    resp[["queue_position"]] <- job_queue_position(job)
+  }
+  make_response(req_id, resp)
+}
+
+
 #' `job.list` handler
 #'
 #' @author EDG
@@ -1591,6 +1832,32 @@ handle_job_result <- function(conn, frame, server) {
       payload
     ))
   }
+  if (slice == "assignments") {
+    if (!inherits(result, "rtemis::Clustering")) {
+      rtemis.core::abort(
+        "`assignments` slice requires a `Clustering` result.",
+        class = "rtemislive_invalid_params"
+      )
+    }
+    as_dt <- assignments_table(result)
+    if (is.null(as_dt) || NROW(as_dt) == 0L) {
+      return(make_response(
+        req_id,
+        list(rows = 0L, cols = 0L, columns = list(), format = "arrow-ipc")
+      ))
+    }
+    payload <- encode_arrow_ipc(as_dt)
+    return(make_response_payload(
+      req_id,
+      list(
+        rows = NROW(as_dt),
+        cols = NCOL(as_dt),
+        columns = names(as_dt),
+        format = "arrow-ipc"
+      ),
+      payload
+    ))
+  }
   if (slice == "loadings") {
     if (!inherits(result, "rtemis::Decomposition")) {
       rtemis.core::abort(
@@ -1625,7 +1892,7 @@ handle_job_result <- function(conn, frame, server) {
       "Unsupported slice `",
       slice,
       "`. Use `summary`, `raw`, `varimp`, `predictions`, `metrics`, ",
-      "`transformed`, or `loadings`."
+      "`transformed`, `loadings`, or `assignments`."
     ),
     class = "rtemislive_invalid_params"
   )
@@ -1685,6 +1952,14 @@ handle_job_delete <- function(conn, frame, server) {
   ),
   "decomp.algorithm.describe" = list(
     handler = handle_decomp_algorithm_describe,
+    requires = "authed"
+  ),
+  "cluster.algorithms" = list(
+    handler = handle_cluster_algorithms,
+    requires = "authed"
+  ),
+  "cluster.algorithm.describe" = list(
+    handler = handle_cluster_algorithm_describe,
     requires = "authed"
   ),
   "resampler.describe" = list(
@@ -1757,6 +2032,10 @@ handle_job_delete <- function(conn, frame, server) {
   ),
   "decomp" = list(
     handler = handle_decomp,
+    requires = c("authed", "attached")
+  ),
+  "cluster" = list(
+    handler = handle_cluster,
     requires = c("authed", "attached")
   ),
   "job.list" = list(
