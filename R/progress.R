@@ -267,7 +267,7 @@ init_daemon_progress <- function(url) {
   # ever shipped.
   #
   # Workaround: use `everywhere` only to plant the URL in the daemon's
-  # `globalenv()` (which IS persisted), then let `ensure_daemon_sink()`
+  # `options()` (which IS persisted), then let `ensure_daemon_sink()`
   # install the socket + sink lazily at job start - that runs inside a
   # regular `mirai()` task whose namespace writes DO persist. After the
   # first job on a daemon, subsequent jobs find the sink installed and
@@ -278,7 +278,7 @@ init_daemon_progress <- function(url) {
   # bug that wedged this whole channel. `everywhere({...})` works.
   mirai::everywhere(
     {
-      assign(".rtemislive_progress_url", url, envir = globalenv())
+      options(rtemislive.progress_url = url)
     },
     url = url
   )
@@ -314,7 +314,7 @@ ensure_daemon_sink <- function() {
   if (!is.null(live_env[["msg_sink"]])) {
     return(invisible(NULL))
   }
-  url <- get0(".rtemislive_progress_url", envir = globalenv())
+  url <- getOption("rtemislive.progress_url")
   if (is.null(url) || !nzchar(url)) {
     return(invisible(NULL))
   }
