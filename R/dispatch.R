@@ -886,8 +886,10 @@ handle_session_join <- function(conn, frame, server) {
   req_id <- frame[["header"]][["id"]] %||% NA_character_
   params <- frame[["header"]][["params"]] %||% list()
   s <- NULL
-  if (!is.null(params[["id"]])) {
-    s <- get_session_by_id(params[["id"]])
+  # Spec (implementation.md): `{ name }` or `{ session_id }`.
+  join_id <- params[["session_id"]]
+  if (!is.null(join_id)) {
+    s <- get_session_by_id(join_id)
   }
   if (is.null(s) && !is.null(params[["name"]])) {
     s <- get_session_by_name(params[["name"]])
@@ -900,6 +902,7 @@ handle_session_join <- function(conn, frame, server) {
   }
   attach_connection(s, conn[["id"]])
   conn[["session_id"]] <- s[["id"]]
+  replay_buffered_events(server, s, conn)
   make_response(req_id, session_snapshot(s))
 }
 
@@ -1269,6 +1272,18 @@ handle_train <- function(conn, frame, server) {
   s <- connection_session(conn)
   data_dt <- get_data(s, data_handle)
 
+  # Binary-classification positive class. The client sends `positive_case`
+  # only for a 2-level categorical target; it is forwarded to the config and
+  # applied by train() via set_positive_class(). Normalize empty → NULL.
+  positive_case <- params[["positive_case"]]
+  if (
+    !is.character(positive_case) ||
+      length(positive_case) != 1L ||
+      !nzchar(positive_case)
+  ) {
+    positive_case <- NULL
+  }
+
   parse_or_abort <- function(value, builder, what) {
     if (is.null(value)) {
       return(NULL)
@@ -1339,6 +1354,7 @@ handle_train <- function(conn, frame, server) {
   cfg <- setup_SuperConfigLive(
     dat_training = data_dt,
     weights = params[["weights"]],
+    positive_class = positive_case,
     preprocessor_config = prp,
     algorithm = algorithm,
     hyperparameters = hp,
@@ -1920,6 +1936,176 @@ handle_job_delete <- function(conn, frame, server) {
 }
 
 
+#' `job.save` handler
+#'
+#' Serialize a completed job's full result object to an `.rds` file on the
+#' server's local filesystem via [saveRDS()]. The client supplies a target
+#' directory (created if missing) and an optional filename; the complete
+#' rtemis object (`Supervised` / `Decomposition` / `Clustering`) is written
+#' so it can be reloaded in R with [readRDS()] for prediction or inspection.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+handle_job_save <- function(conn, frame, server) {
+  req_id <- frame[["header"]][["id"]] %||% NA_character_
+  params <- frame[["header"]][["params"]] %||% list()
+  job_id <- params[["job_id"]]
+  if (is.null(job_id)) {
+    rtemis.core::abort(
+      "`job_id` is required.",
+      class = "rtemislive_invalid_params"
+    )
+  }
+  dir <- params[["dir"]]
+  if (is.null(dir) || !is.character(dir) || !nzchar(dir)) {
+    rtemis.core::abort(
+      "`dir` is required.",
+      class = "rtemislive_invalid_params"
+    )
+  }
+
+  s <- connection_session(conn)
+  job <- get_job(s, job_id)
+  if (is.null(job)) {
+    rtemis.core::abort(
+      "Unknown job_id '",
+      job_id,
+      "'.",
+      class = "rtemislive_not_found"
+    )
+  }
+  if (!identical(job[["status"]], "complete")) {
+    rtemis.core::abort(
+      paste0(
+        "Job status is `",
+        job[["status"]],
+        "`; no result available."
+      ),
+      class = "rtemislive_invalid_params"
+    )
+  }
+  result <- job[["result"]]
+  if (is.null(result)) {
+    rtemis.core::abort(
+      "Job has no result to save.",
+      class = "rtemislive_invalid_params"
+    )
+  }
+
+  dir <- path.expand(dir)
+  if (!dir.exists(dir)) {
+    created <- dir.create(dir, recursive = TRUE, showWarnings = FALSE)
+    if (!created) {
+      rtemis.core::abort(
+        "Could not create directory '",
+        dir,
+        "'.",
+        class = "rtemislive_io_error"
+      )
+    }
+  }
+
+  filename <- params[["filename"]]
+  if (is.null(filename) || !is.character(filename) || !nzchar(filename)) {
+    filename <- paste0(job[["type"]] %||% "rtemis_object", "_", job_id)
+  }
+  # `basename()` strips any directory components a client might smuggle into
+  # `filename`, keeping the write confined to the requested `dir`.
+  filename <- basename(filename)
+  if (!grepl("\\.rds$", filename, ignore.case = TRUE)) {
+    filename <- paste0(filename, ".rds")
+  }
+  path <- file.path(dir, filename)
+
+  saveRDS(result, path)
+
+  make_response(
+    req_id,
+    list(
+      path = normalizePath(path, mustWork = FALSE),
+      bytes = as.numeric(file.size(path))
+    )
+  )
+}
+
+
+#' Open a native OS directory picker and return the chosen path
+#'
+#' The rtemis server runs on the user's own machine, so it can present a
+#' native folder chooser (Finder on macOS, the shell picker on Windows,
+#' `zenity` on Linux). Returns the selected directory, or `NULL` if the
+#' dialog was cancelled or no picker is available. The call blocks the
+#' server loop while the dialog is open; this is acceptable for the local
+#' single-user case.
+#'
+#' @param prompt Character scalar shown in the dialog title.
+#'
+#' @return Character scalar path, or `NULL`.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+choose_directory <- function(prompt = "Select a folder") {
+  os <- Sys.info()[["sysname"]]
+  path <- tryCatch(
+    suppressWarnings({
+      if (identical(os, "Darwin")) {
+        script <- sprintf(
+          'POSIX path of (choose folder with prompt "%s")',
+          gsub('"', "", prompt, fixed = TRUE)
+        )
+        system2(
+          "osascript",
+          c("-e", shQuote(script)),
+          stdout = TRUE,
+          stderr = FALSE
+        )
+      } else if (identical(os, "Windows")) {
+        utils::choose.dir(caption = prompt)
+      } else {
+        system2(
+          "zenity",
+          c("--file-selection", "--directory", paste0("--title=", prompt)),
+          stdout = TRUE,
+          stderr = FALSE
+        )
+      }
+    }),
+    error = function(e) NULL
+  )
+  if (length(path) == 0L) {
+    return(NULL)
+  }
+  path <- trimws(path[[1L]])
+  if (is.na(path) || !nzchar(path)) {
+    return(NULL)
+  }
+  path
+}
+
+
+#' `dialog.choose_dir` handler
+#'
+#' Pops a native directory chooser on the server machine and returns the
+#' selected path (or `cancelled = TRUE`). Used by the client to populate a
+#' save destination without the user typing a path.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+handle_choose_dir <- function(conn, frame, server) {
+  req_id <- frame[["header"]][["id"]] %||% NA_character_
+  params <- frame[["header"]][["params"]] %||% list()
+  prompt <- params[["prompt"]] %||% "Select a folder"
+  path <- choose_directory(prompt)
+  if (is.null(path)) {
+    return(make_response(req_id, list(cancelled = TRUE)))
+  }
+  make_response(req_id, list(path = path, cancelled = FALSE))
+}
+
+
 # %% Method table ------------------------------------------------------------
 
 # Entries: list(handler = fn, requires = character[])
@@ -2057,5 +2243,13 @@ handle_job_delete <- function(conn, frame, server) {
   "job.delete" = list(
     handler = handle_job_delete,
     requires = c("authed", "attached")
+  ),
+  "job.save" = list(
+    handler = handle_job_save,
+    requires = c("authed", "attached")
+  ),
+  "dialog.choose_dir" = list(
+    handler = handle_choose_dir,
+    requires = "authed"
   )
 )
