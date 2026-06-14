@@ -411,8 +411,10 @@ handle_algorithms <- function(conn, frame, server) {
 #' `decomp.algorithms` handler
 #'
 #' Returns the catalogue of decomposition algorithms. Each entry:
-#' `{ name, description }`. Per-algorithm config schemas are fetched
-#' separately via `handle_decomp_algorithm_describe()`
+#' `{ name, description, applicable }`, where `applicable` is `TRUE` when the
+#' algorithm's fitted transform can be applied to new data (the requirement for
+#' use as a `train()` `decomposition_config`). Per-algorithm config schemas are
+#' fetched separately via `handle_decomp_algorithm_describe()`
 #' (`decomp.algorithm.describe`).
 #'
 #' @author EDG
@@ -424,10 +426,14 @@ handle_decomp_algorithms <- function(conn, frame, server) {
   if (!is.data.frame(tbl)) {
     return(make_response(req_id, list(algorithms = list())))
   }
+  applicable <- asNamespace("rtemis")[["decom_algorithms_applicable"]] %||%
+    character()
   algorithms <- lapply(seq_len(nrow(tbl)), function(i) {
+    name <- as.character(tbl[i, 1L])
     list(
-      name = as.character(tbl[i, 1L]),
-      description = as.character(tbl[i, 2L])
+      name = name,
+      description = as.character(tbl[i, 2L]),
+      applicable = name %in% applicable
     )
   })
   make_response(req_id, list(algorithms = algorithms))
@@ -1277,6 +1283,8 @@ handle_data_delete <- function(conn, frame, server) {
 #' - `algorithm` - character, see `algorithms` method
 #' - `hyperparameters` - JSON object matching one of the `setup_*` shapes
 #' - `preprocessor_config` - JSON object accepted by `setup_Preprocessor()`
+#' - `decomposition_config` - JSON object `{ algorithm, ... }` accepted by
+#'   `rtemis::.list_to_DecompositionConfig()`
 #' - `tuner_config` - JSON object accepted by `rtemis::.list_to_TunerConfig()`
 #' - `outer_resampling_config` - JSON object accepted by
 #'   `rtemis::.list_to_ResamplerConfig()`
@@ -1359,6 +1367,14 @@ handle_train <- function(conn, frame, server) {
     function(v) do.call(setup_Preprocessor, v),
     "preprocessor_config"
   )
+  # Decomposition config arrives flat (`{ algorithm, <params> }`) from the UI;
+  # `.list_to_DecompositionConfig()` validates the algorithm is one whose
+  # transform can be applied on new data and dispatches to its `setup_*()`.
+  dcmp <- parse_or_abort(
+    params[["decomposition_config"]],
+    rtemis::.list_to_DecompositionConfig,
+    "decomposition_config"
+  )
   tn <- parse_or_abort(
     params[["tuner_config"]],
     rtemis::.list_to_TunerConfig,
@@ -1387,6 +1403,7 @@ handle_train <- function(conn, frame, server) {
     weights = params[["weights"]],
     positive_class = positive_case,
     preprocessor_config = prp,
+    decomposition_config = dcmp,
     algorithm = algorithm,
     hyperparameters = hp,
     tuner_config = tn,
