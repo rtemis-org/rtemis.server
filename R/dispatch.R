@@ -472,6 +472,12 @@ handle_decomp_algorithms <- function(conn, frame, server) {
   fmls <- formals(setup_fn)
   lapply(names(fmls), function(arg) {
     raw <- fmls[[arg]]
+    # A formal whose default simply names another formal (e.g.
+    # `center = scale`) should report that formal's concrete default,
+    # not the captured function the bare symbol would evaluate to.
+    if (is.symbol(raw) && as.character(raw) %in% names(fmls)) {
+      raw <- fmls[[as.character(raw)]]
+    }
     # Enumerated choices: `c("a", "b", ...)` - keep choices, default is first.
     choices <- NULL
     default <- tryCatch(
@@ -838,6 +844,31 @@ handle_cluster_algorithm_describe <- function(conn, frame, server) {
 handle_resampler_describe <- function(conn, frame, server) {
   req_id <- frame[["header"]][["id"]] %||% NA_character_
   parameters <- .live_build_schema(setup_Resampler)
+  make_response(req_id, list(parameters = parameters))
+}
+
+
+#' `preprocessor.describe` handler
+#'
+#' Returns the schema for `setup_Preprocessor()` so the client can render
+#' a preprocessing configuration form. Same shape and machinery as
+#' `resampler.describe`. `impute_missRanger_params` is a nested list with
+#' no scalar control, so it is omitted here and left to the server-side
+#' default; the matching `train` handler still accepts it.
+#'
+#' Wire response: `{ parameters: [{ name, type, default, tunable,
+#' choices? }, ...] }`.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+handle_preprocessor_describe <- function(conn, frame, server) {
+  req_id <- frame[["header"]][["id"]] %||% NA_character_
+  skip <- "impute_missRanger_params"
+  parameters <- Filter(
+    function(p) !(p[["name"]] %in% skip),
+    .live_build_schema(setup_Preprocessor)
+  )
   make_response(req_id, list(parameters = parameters))
 }
 
@@ -2150,6 +2181,10 @@ handle_choose_dir <- function(conn, frame, server) {
   ),
   "resampler.describe" = list(
     handler = handle_resampler_describe,
+    requires = "authed"
+  ),
+  "preprocessor.describe" = list(
+    handler = handle_preprocessor_describe,
     requires = "authed"
   ),
   "session.list" = list(
