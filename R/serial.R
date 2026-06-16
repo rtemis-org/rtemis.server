@@ -485,8 +485,13 @@ confusion_to_df <- function(cm) {
     return(NULL)
   }
   df <- as.data.frame(cm)
-  df[["Reference"]] <- as.character(df[["Reference"]])
-  df[["Predicted"]] <- as.character(df[["Predicted"]])
+  # `cm` from rtemis metrics always names its margins `Reference`/`Predicted`,
+  # but rename by index so a `table` from any source still serializes cleanly.
+  if (ncol(df) == 3L) {
+    names(df)[1:2] <- c("Reference", "Predicted")
+    df[["Reference"]] <- as.character(df[["Reference"]])
+    df[["Predicted"]] <- as.character(df[["Predicted"]])
+  }
   df
 }
 

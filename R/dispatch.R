@@ -2006,7 +2006,7 @@ handle_job_save <- function(conn, frame, server) {
     )
   }
   dir <- params[["dir"]]
-  if (is.null(dir) || !is.character(dir) || !nzchar(dir)) {
+  if (is.null(dir) || !is.character(dir) || length(dir) != 1L || !nzchar(dir)) {
     rtemis.core::abort(
       "`dir` is required.",
       class = "rtemislive_invalid_params"
@@ -2055,7 +2055,12 @@ handle_job_save <- function(conn, frame, server) {
   }
 
   filename <- params[["filename"]]
-  if (is.null(filename) || !is.character(filename) || !nzchar(filename)) {
+  if (
+    is.null(filename) ||
+      !is.character(filename) ||
+      length(filename) != 1L ||
+      !nzchar(filename)
+  ) {
     filename <- paste0(job[["type"]] %||% "rtemis_object", "_", job_id)
   }
   # `basename()` strips any directory components a client might smuggle into
