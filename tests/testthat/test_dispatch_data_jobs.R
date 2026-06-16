@@ -631,6 +631,94 @@ test_that("job.delete removes a finished job", {
   expect_true(resp[["result"]][["deleted"]])
 })
 
+test_that("job.save writes the result to an .rds file and round-trips", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  server <- make_server()
+  conn <- authed_conn(server, attach_session = "s")
+  s <- connection_session(conn)
+  job <- submit_job(s, "test", list(), expr = quote(list(answer = 42L)))
+  wait_for_resolved(job)
+  check_job_resolved(job)
+
+  dir <- file.path(tempdir(), basename(tempfile("savetest_")))
+  on.exit(unlink(dir, recursive = TRUE), add = TRUE)
+  resp <- dispatch_request(
+    conn,
+    make_request(
+      "job.save",
+      params = list(job_id = job[["id"]], dir = dir, filename = "obj")
+    ),
+    server
+  )
+  expect_true(resp[["ok"]])
+  path <- resp[["result"]][["path"]]
+  expect_true(file.exists(path))
+  expect_match(path, "obj\\.rds$")
+  expect_gt(resp[["result"]][["bytes"]], 0)
+  expect_equal(readRDS(path), list(answer = 42L))
+})
+
+test_that("job.save defaults the filename from the job type + id", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  server <- make_server()
+  conn <- authed_conn(server, attach_session = "s")
+  s <- connection_session(conn)
+  job <- submit_job(s, "train", list(), expr = quote(1L))
+  wait_for_resolved(job)
+  check_job_resolved(job)
+
+  dir <- file.path(tempdir(), basename(tempfile("savetest_")))
+  on.exit(unlink(dir, recursive = TRUE), add = TRUE)
+  resp <- dispatch_request(
+    conn,
+    make_request("job.save", params = list(job_id = job[["id"]], dir = dir)),
+    server
+  )
+  expect_true(resp[["ok"]])
+  expect_match(basename(resp[["result"]][["path"]]), "^train_.*\\.rds$")
+})
+
+test_that("job.save requires `dir`", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  server <- make_server()
+  conn <- authed_conn(server, attach_session = "s")
+  s <- connection_session(conn)
+  job <- submit_job(s, "test", list(), expr = quote(1L))
+  wait_for_resolved(job)
+  check_job_resolved(job)
+  resp <- dispatch_request(
+    conn,
+    make_request("job.save", params = list(job_id = job[["id"]])),
+    server
+  )
+  expect_false(resp[["ok"]])
+  expect_equal(resp[["error"]][["code"]], "invalid_params")
+})
+
+test_that("job.save on an unresolved job -> invalid_params", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  server <- make_server()
+  conn <- authed_conn(server, attach_session = "s")
+  s <- connection_session(conn)
+  job <- submit_job(s, "test", list(), expr = quote(Sys.sleep(2)))
+  resp <- dispatch_request(
+    conn,
+    make_request(
+      "job.save",
+      params = list(job_id = job[["id"]], dir = tempdir())
+    ),
+    server
+  )
+  expect_false(resp[["ok"]])
+  expect_equal(resp[["error"]][["code"]], "invalid_params")
+  wait_for_resolved(job)
+  check_job_resolved(job)
+})
+
 
 # Method table coverage -----------------------------------------------------
 
@@ -660,7 +748,9 @@ test_that("method table now exposes all wire methods", {
     "job.status",
     "job.cancel",
     "job.result",
-    "job.delete"
+    "job.delete",
+    "job.save",
+    "dialog.choose_dir"
   )
   expect_true(all(expected %in% names(.METHOD_TABLE)))
 })

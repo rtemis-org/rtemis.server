@@ -464,6 +464,38 @@ make_response_payload <- function(id, result, payload) {
 .SUMMARY_STRIP_METRICS <- c("res_metrics")
 
 
+#' Convert a confusion-matrix `table` to a wire-safe long table
+#'
+#' A `table` has no `jsonlite::asJSON` method, so it cannot ship as-is.
+#' `as.data.frame()` on a `table` yields the canonical long form with
+#' `Reference`, `Predicted`, `Freq` columns, which serializes as an array of
+#' records. Row order follows rtemis's factor levels (positive class first),
+#' so the client recovers class order from first appearance — never sorting
+#' or recomputing.
+#'
+#' @param cm A confusion-matrix `table`, or `NULL`.
+#'
+#' @return `data.frame` (`Reference`, `Predicted`, `Freq`) or `NULL`.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+confusion_to_df <- function(cm) {
+  if (is.null(cm)) {
+    return(NULL)
+  }
+  df <- as.data.frame(cm)
+  # `cm` from rtemis metrics always names its margins `Reference`/`Predicted`,
+  # but rename by index so a `table` from any source still serializes cleanly.
+  if (ncol(df) == 3L) {
+    names(df)[1:2] <- c("Reference", "Predicted")
+    df[["Reference"]] <- as.character(df[["Reference"]])
+    df[["Predicted"]] <- as.character(df[["Predicted"]])
+  }
+  df
+}
+
+
 #' Headline JSON for the `summary` slice
 #'
 #' Builds the lightweight summary envelope: full `to_json(result)` with
@@ -492,6 +524,18 @@ summary_json <- function(result) {
     if (is.list(slice)) {
       for (k in .SUMMARY_STRIP_METRICS) {
         slice[[k]] <- NULL
+      }
+      # Replace the raw confusion-matrix `table` (no JSON method) with an
+      # explicit {classes, counts}. The resampled aggregate lives at
+      # `confusion_matrix`; a single fit's is at `metrics$Confusion_Matrix`.
+      cm <- slice[["confusion_matrix"]]
+      slice[["confusion_matrix"]] <- NULL
+      if (is.null(cm) && is.list(slice[["metrics"]])) {
+        cm <- slice[["metrics"]][["Confusion_Matrix"]]
+        slice[["metrics"]][["Confusion_Matrix"]] <- NULL
+      }
+      if (!is.null(cm)) {
+        slice[["confusion"]] <- confusion_to_df(cm)
       }
       out[[split]] <- slice
     }

@@ -345,6 +345,49 @@ emit_event_to_connection <- function(server, conn, event) {
 }
 
 
+#' Replay a session's buffered events to a joining connection
+#'
+#' Drains the session's disconnect buffer (events accumulated while no
+#' connection was attached) and writes each one, in order, to the freshly
+#' joined connection. If the buffer overflowed while detached, a trailing
+#' `session.events_dropped` event reports the drop count so the client can
+#' resync via `job.list` / `data.list` (spec paragraph 5.8).
+#'
+#' On the first write failure the connection is disconnected and replay
+#' stops - remaining events are lost (the connection is gone).
+#'
+#' @param server Server env.
+#' @param session Session env.
+#' @param conn Connection env - the joining connection.
+#'
+#' @return Integer - number of buffered events written.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+replay_buffered_events <- function(server, session, conn) {
+  drained <- drain_event_buffer(session)
+  sent <- 0L
+  for (event in drained[["events"]]) {
+    if (!emit_event_to_connection(server, conn, event)) {
+      return(sent)
+    }
+    sent <- sent + 1L
+  }
+  if (drained[["dropped"]] > 0L) {
+    emit_event_to_connection(
+      server,
+      conn,
+      make_event(
+        "session.events_dropped",
+        list(events_dropped = drained[["dropped"]])
+      )
+    )
+  }
+  sent
+}
+
+
 # %% Progress drain + routing ----------------------------------------------
 
 #' Drain the progress pull socket and route each message

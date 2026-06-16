@@ -330,6 +330,35 @@ test_that("resampler.describe returns the setup_Resampler schema with choices", 
 })
 
 
+test_that("preprocessor.describe returns the setup_Preprocessor schema", {
+  server <- make_server()
+  conn <- authed_conn(server)
+  resp <- dispatch_request(
+    conn,
+    make_request("preprocessor.describe"),
+    server
+  )
+  expect_true(resp[["ok"]])
+  params <- resp[["result"]][["parameters"]]
+  expect_true(is.list(params))
+  expect_gt(length(params), 0L)
+  by_name <- setNames(params, vapply(params, `[[`, character(1L), "name"))
+  # impute_type is an enum; choices preserved, first value as default
+  expect_true("choices" %in% names(by_name[["impute_type"]]))
+  expect_true("missRanger" %in% by_name[["impute_type"]][["choices"]])
+  expect_equal(by_name[["impute_type"]][["default"]], "missRanger")
+  # complete_cases is a logical flag, default FALSE
+  expect_equal(by_name[["complete_cases"]][["type"]], "logical")
+  expect_false(by_name[["complete_cases"]][["default"]])
+  # `center = scale` resolves to scale's own default rather than the
+  # `scale` function — a concrete FALSE logical.
+  expect_equal(by_name[["center"]][["type"]], "logical")
+  expect_false(by_name[["center"]][["default"]])
+  # The nested-list arg has no scalar control and is omitted.
+  expect_false("impute_missRanger_params" %in% names(by_name))
+})
+
+
 # session.list / create / join / info / detach / delete / rename ------------
 
 test_that("session.list starts empty and grows after session.create", {
