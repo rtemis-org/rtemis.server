@@ -290,7 +290,7 @@ init_daemon_progress <- function(url) {
 #' Runs as the first action of every wrapped job expression (see
 #' `submit_job` in jobs.R). On the first call per daemon, opens a
 #' nanonext push socket dialing the URL planted by
-#' `init_daemon_progress` and installs an `rtemis::set_msg_sink()`
+#' `init_daemon_progress` and installs an `rtemis.core::set_msg_sink()`
 #' that forwards every `msg()` call as a JSON envelope on the socket.
 #' On subsequent calls (sink already installed), short-circuits.
 #'
@@ -311,7 +311,7 @@ init_daemon_progress <- function(url) {
 #' @export
 ensure_daemon_sink <- function() {
   live_env <- asNamespace("rtemis")[["live"]]
-  if (!is.null(live_env[["msg_sink"]])) {
+  if (!is.null(rtemis.core::get_msg_sink())) {
     return(invisible(NULL))
   }
   url <- getOption("rtemislive.progress_url")
@@ -320,7 +320,7 @@ ensure_daemon_sink <- function() {
   }
   sock <- nanonext::socket("push", dial = url)
   live_env[["rtemislive_progress_socket"]] <- sock
-  rtemis::set_msg_sink(function(m) {
+  rtemis.core::set_msg_sink(function(m) {
     s <- live_env[["rtemislive_progress_socket"]]
     if (is.null(s)) {
       return(invisible(NULL))

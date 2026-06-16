@@ -13,7 +13,7 @@ Invisible \code{NULL}.
 Runs as the first action of every wrapped job expression (see
 \code{submit_job} in jobs.R). On the first call per daemon, opens a
 nanonext push socket dialing the URL planted by
-\code{init_daemon_progress} and installs an \code{rtemis::set_msg_sink()}
+\code{init_daemon_progress} and installs an \code{rtemis.core::set_msg_sink()}
 that forwards every \code{msg()} call as a JSON envelope on the socket.
 On subsequent calls (sink already installed), short-circuits.
 }
