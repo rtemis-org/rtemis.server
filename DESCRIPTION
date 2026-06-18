@@ -1,7 +1,7 @@
 Package: rtemis.server
-Version: 0.0.7
+Version: 0.0.8
 Title: 'rtemis' Server
-Date: 2026-06-07
+Date: 2026-06-18
 Authors@R: person(given = "E.D.", family = "Gennatas", role = c("aut", "cre", "cph"), 
     email = "gennatas@gmail.com", comment = c(ORCID = "0000-0001-9280-3609"))
 Description: Create a websocket server to run 'rtemis' functions from an 'rtemislive' client.
@@ -12,13 +12,12 @@ ByteCompile: yes
 Depends:
     R (>= 4.1.0)
 Imports:
-    cli,
     methods,
     utils,
     S7,
     data.table,
-    rtemis (>= 1.2.0),
-    rtemis.core (>= 0.2.0),
+    rtemis (>= 1.2.4),
+    rtemis.core (>= 0.3.0),
     jsonlite,
     later,
     mirai,

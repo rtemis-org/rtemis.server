@@ -477,14 +477,14 @@ finalize_job <- function(job) {
 #' @keywords internal
 #' @noRd
 format_mirai_error <- function(value) {
-  msg <- attr(value, "message", exact = TRUE)
-  if (is.null(msg)) {
-    msg <- tryCatch(as.character(value), error = function(e) "Unknown error.")
+  .msg <- attr(value, "message", exact = TRUE)
+  if (is.null(.msg)) {
+    .msg <- tryCatch(as.character(value), error = function(e) "Unknown error.")
   }
-  if (length(msg) > 1L) {
-    msg <- paste(msg, collapse = " ")
+  if (length(.msg) > 1L) {
+    .msg <- paste(.msg, collapse = " ")
   }
-  msg
+  .msg
 }
 
 
