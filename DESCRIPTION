@@ -12,12 +12,11 @@ ByteCompile: yes
 Depends:
     R (>= 4.1.0)
 Imports:
-    cli,
     methods,
     utils,
     S7,
     data.table,
-    rtemis (>= 1.2.0),
+    rtemis (>= 1.2.4),
     rtemis.core (>= 0.3.0),
     jsonlite,
     later,
