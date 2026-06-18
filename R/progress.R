@@ -194,23 +194,39 @@ route_progress <- function(messages, send_event = NULL) {
     # the recorded snapshot nor the `job.progress` event leaks escape
     # sequences into the browser.
     clean_msg <- rtemis.core::strip_ansi(m[["message"]] %||% "")
+    # Execution-graph fields are additive: present for node events emitted by rtemis's
+    # observability session, NULL for plain msg() calls. See rtemis specs/observability.md.
+    graph <- list(
+      node_id = m[["node_id"]],
+      parent_id = m[["parent_id"]],
+      kind = m[["kind"]],
+      status = m[["status"]],
+      current = m[["current"]],
+      total = m[["total"]]
+    )
     record_job_progress(
       job,
-      list(
-        stage = m[["caller"]],
-        message = clean_msg,
-        ts = m[["ts"]],
-        level = m[["level"]]
+      c(
+        list(
+          stage = m[["caller"]],
+          message = clean_msg,
+          ts = m[["ts"]],
+          level = m[["level"]]
+        ),
+        graph
       )
     )
     event <- make_event(
       "job.progress",
-      data = list(
-        job_id = jid,
-        stage = m[["caller"]],
-        message = clean_msg,
-        ts = m[["ts"]],
-        level = m[["level"]]
+      data = c(
+        list(
+          job_id = jid,
+          stage = m[["caller"]],
+          message = clean_msg,
+          ts = m[["ts"]],
+          level = m[["level"]]
+        ),
+        graph
       )
     )
     if (is.function(send_event)) {
@@ -330,7 +346,15 @@ ensure_daemon_sink <- function() {
       caller = m$caller,
       message = m$text,
       ts = m$ts,
-      level = m$level
+      level = m$level,
+      # Execution-graph fields (additive; NULL for plain msg() calls). See
+      # rtemis.core::set_msg_sink() and rtemis's specs/observability.md.
+      node_id = m$node_id,
+      parent_id = m$parent_id,
+      kind = m$kind,
+      status = m$status,
+      current = m$current,
+      total = m$total
     )
     txt <- jsonlite::toJSON(
       payload,
