@@ -71,8 +71,7 @@ clear_sessions <- function() {
 
 #' Generate a session id
 #'
-#' Returns `sess-<hex16>`. Uses uuid if available (preferred), otherwise
-#' falls back to R PRNG.
+#' Returns `sess-<hex16>`, derived from a time-based UUID.
 #'
 #' @return Character scalar.
 #'
