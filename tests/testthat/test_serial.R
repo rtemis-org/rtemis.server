@@ -120,6 +120,60 @@ test_that("varimp_table returns NULL on non-Supervised", {
 })
 
 
+# roc_table -----------------------------------------------------------------
+
+test_that("roc_table returns an empty typed table on non-Supervised", {
+  rt <- roc_table(1L)
+  expect_s3_class(rt, "data.table")
+  expect_equal(
+    names(rt),
+    c("split", "class", "fold", "fpr", "tpr", "auc")
+  )
+  expect_equal(nrow(rt), 0L)
+})
+
+test_that("roc_table emits an aggregate plus one curve per resample", {
+  skip_if_not_installed("rtemis")
+
+  set.seed(1L)
+  n <- 120L
+  dt <- data.frame(a = rnorm(n), b = rnorm(n))
+  lp <- 1.2 * dt[["a"]] - 0.8 * dt[["b"]]
+  dt[["y"]] <- factor(ifelse(plogis(lp) > runif(n), "pos", "neg"))
+
+  fit <- rtemis::train(
+    dt,
+    algorithm = "glm",
+    outer_resampling_config = rtemis::setup_Resampler(
+      n_resamples = 3L,
+      type = "KFold",
+      seed = 1L
+    ),
+    verbosity = 0L
+  )
+  expect_true(inherits(fit, "rtemis::SupervisedRes"))
+
+  rt <- roc_table(fit)
+  expect_s3_class(rt, "data.table")
+  expect_equal(names(rt), c("split", "class", "fold", "fpr", "tpr", "auc"))
+
+  test_rows <- rt[split == "test"]
+  expect_gt(nrow(test_rows), 0L)
+
+  # One pooled "aggregate" curve plus exactly one curve per resample.
+  expect_true("aggregate" %in% test_rows[["fold"]])
+  per_fold <- unique(test_rows[fold != "aggregate"][["fold"]])
+  expect_equal(length(per_fold), 3L)
+
+  # AUC is constant within a split/class/fold group (repeated per vertex).
+  auc_by_group <- test_rows[,
+    .(n_auc = length(unique(auc))),
+    by = .(class, fold)
+  ]
+  expect_true(all(auc_by_group[["n_auc"]] == 1L))
+})
+
+
 # make_response_payload ----------------------------------------------------
 
 test_that("make_response_payload bundles header + payload", {
