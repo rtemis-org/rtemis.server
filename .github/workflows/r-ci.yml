@@ -47,6 +47,7 @@ jobs:
           r-version: release
           use-public-rspm: true
           extra-repositories: https://rtemis-org.r-universe.dev
+
       - name: Add rtemis-org.r-universe.dev to repos
         run: |
           cat(
