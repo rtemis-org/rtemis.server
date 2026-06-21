@@ -1,5 +1,5 @@
 Package: rtemis.server
-Version: 0.0.8
+Version: 0.0.9
 Title: 'rtemis' Server
 Date: 2026-06-20
 Authors@R: person(given = "E.D.", family = "Gennatas", role = c("aut", "cre", "cph"), 

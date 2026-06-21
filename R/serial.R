@@ -222,6 +222,119 @@ predictions_table_resampled <- function(sup) {
 }
 
 
+# %% ROC curve table ---------------------------------------------------------
+
+#' Pool per-fold prediction lists (resampled fits) into single objects
+#'
+#' Single fits pass through unchanged. `SupervisedRes` fits store `y_*` /
+#' `predicted_prob_*` as per-fold lists; concatenate the labels and stack
+#' the probabilities (vector -> concat, matrix -> rbind) so one ROC curve
+#' summarises the pooled predictions for a split.
+#'
+#' @param y Factor, or list of per-fold factors.
+#' @param prob Numeric vector / matrix, or list of per-fold such.
+#'
+#' @return `list(y, prob)`.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+roc_pool_split <- function(y, prob) {
+  if (is.list(y) && !is.data.frame(y)) {
+    lv <- levels(y[[1L]])
+    y <- factor(unlist(lapply(y, as.character), use.names = FALSE), levels = lv)
+  }
+  if (is.list(prob) && !is.data.frame(prob) && !is.matrix(prob)) {
+    prob <- if (length(prob) > 0L && !is.null(dim(prob[[1L]]))) {
+      do.call(rbind, prob)
+    } else {
+      unlist(prob, use.names = FALSE)
+    }
+  }
+  list(y = y, prob = prob)
+}
+
+
+#' Build a long-format ROC-curve table for a classification result
+#'
+#' Marshals the per-split true labels and predicted probabilities and defers
+#' the actual curve computation to [rtemis::roc_curve()] (binary: one curve
+#' for the positive class; multiclass: one-vs-rest per class). Resampled fits
+#' pool their per-fold predictions per split before computing. This is the
+#' transport counterpart of the `varimp` slice (which calls
+#' `rtemis::get_varimp`): all ROC logic lives in `rtemis`.
+#'
+#' Schema: `split`, `class`, `fpr`, `tpr`, `auc` (the AUC is constant within a
+#' split/class group, repeated per vertex). Regression results and classifiers
+#' without predicted probabilities yield a zero-row table.
+#'
+#' @param sup `Supervised` / `SupervisedRes` object.
+#' @param max_points Integer: Cap on curve vertices per group (down-sampled in
+#'   `rtemis::roc_curve` so wide datasets ship a compact line).
+#'
+#' @return `data.table` with columns `split`, `class`, `fpr`, `tpr`, `auc`.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+roc_table <- function(sup, max_points = 1000L) {
+  empty <- data.table::data.table(
+    split = character(0),
+    class = character(0),
+    fpr = numeric(0),
+    tpr = numeric(0),
+    auc = numeric(0)
+  )
+  if (
+    !inherits(sup, "rtemis::Supervised") &&
+      !inherits(sup, "rtemis::SupervisedRes")
+  ) {
+    return(empty)
+  }
+
+  splits <- list(
+    training = c(y = "y_training", prob = "predicted_prob_training"),
+    validation = c(y = "y_validation", prob = "predicted_prob_validation"),
+    test = c(y = "y_test", prob = "predicted_prob_test")
+  )
+
+  pieces <- list()
+  for (split_name in names(splits)) {
+    sp <- splits[[split_name]]
+    y <- tryCatch(prop(sup, sp[["y"]]), error = function(e) NULL)
+    prob <- tryCatch(prop(sup, sp[["prob"]]), error = function(e) NULL)
+    if (is.null(y) || is.null(prob)) {
+      next
+    }
+    pooled <- roc_pool_split(y, prob)
+    if (!is.factor(pooled[["y"]])) {
+      next
+    }
+    curve <- tryCatch(
+      rtemis::roc_curve(
+        pooled[["y"]],
+        pooled[["prob"]],
+        max_points = max_points
+      ),
+      error = function(e) NULL
+    )
+    if (is.null(curve) || NROW(curve) == 0L) {
+      next
+    }
+    dt <- data.table::as.data.table(curve)
+    dt[, let(split = split_name)]
+    pieces[[split_name]] <- dt
+  }
+
+  if (length(pieces) == 0L) {
+    return(empty)
+  }
+  out <- data.table::rbindlist(pieces, use.names = TRUE)
+  data.table::setcolorder(out, c("split", "class", "fpr", "tpr", "auc"))
+  out[]
+}
+
+
 # %% Variable importance table ----------------------------------------------
 
 #' Extract the variable-importance table from a `Supervised`

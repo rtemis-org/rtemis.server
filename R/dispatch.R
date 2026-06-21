@@ -1767,6 +1767,9 @@ handle_job_cancel <- function(conn, frame, server) {
 #'   payload of the variable-importance table.
 #' - `predictions`: small JSON pointer + Arrow IPC of the long-format
 #'   predictions table.
+#' - `roc`: small JSON pointer + Arrow IPC of the long-format ROC-curve
+#'   table (`split`, `class`, `fpr`, `tpr`, `auc`) for classification fits,
+#'   computed by `rtemis::roc_curve`; empty pointer otherwise.
 #' - `metrics`: structured JSON for `metrics_training` /
 #'   `metrics_validation` / `metrics_test`.
 #'
@@ -1845,6 +1848,28 @@ handle_job_result <- function(conn, frame, server) {
         rows = NROW(pred_dt),
         cols = NCOL(pred_dt),
         columns = names(pred_dt),
+        format = "arrow-ipc"
+      ),
+      payload
+    ))
+  }
+  if (slice == "roc") {
+    roc_dt <- roc_table(result)
+    if (is.null(roc_dt) || NROW(roc_dt) == 0L) {
+      # Not a classification fit, or no predicted probabilities: empty
+      # pointer (no payload) so the client distinguishes it from an error.
+      return(make_response(
+        req_id,
+        list(rows = 0L, cols = 0L, columns = list(), format = "arrow-ipc")
+      ))
+    }
+    payload <- encode_arrow_ipc(roc_dt)
+    return(make_response_payload(
+      req_id,
+      list(
+        rows = NROW(roc_dt),
+        cols = NCOL(roc_dt),
+        columns = names(roc_dt),
         format = "arrow-ipc"
       ),
       payload
