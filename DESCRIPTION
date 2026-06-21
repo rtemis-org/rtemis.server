@@ -17,7 +17,7 @@ Imports:
     S7,
     arrow,
     data.table,
-    rtemis (>= 1.2.4),
+    rtemis (>= 1.2.5),
     rtemis.core (>= 0.3.0),
     jsonlite,
     later,
