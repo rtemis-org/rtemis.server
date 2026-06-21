@@ -1768,8 +1768,9 @@ handle_job_cancel <- function(conn, frame, server) {
 #' - `predictions`: small JSON pointer + Arrow IPC of the long-format
 #'   predictions table.
 #' - `roc`: small JSON pointer + Arrow IPC of the long-format ROC-curve
-#'   table (`split`, `class`, `fpr`, `tpr`, `auc`) for classification fits,
-#'   computed by `rtemis::roc_curve`; empty pointer otherwise.
+#'   table (`split`, `class`, `fold`, `fpr`, `tpr`, `auc`) for classification
+#'   fits, computed by `rtemis::roc_curve`; `fold` is `"aggregate"` for the
+#'   pooled curve and per-resample labels otherwise. Empty pointer otherwise.
 #' - `metrics`: structured JSON for `metrics_training` /
 #'   `metrics_validation` / `metrics_test`.
 #'

@@ -264,15 +264,19 @@ roc_pool_split <- function(y, prob) {
 #' transport counterpart of the `varimp` slice (which calls
 #' `rtemis::get_varimp`): all ROC logic lives in `rtemis`.
 #'
-#' Schema: `split`, `class`, `fpr`, `tpr`, `auc` (the AUC is constant within a
-#' split/class group, repeated per vertex). Regression results and classifiers
-#' without predicted probabilities yield a zero-row table.
+#' Schema: `split`, `class`, `fold`, `fpr`, `tpr`, `auc` (the AUC is constant
+#' within a split/class/fold group, repeated per vertex). The `fold` column is
+#' `"aggregate"` for the curve pooled across all resamples and `"1"`, `"2"`,
+#' ... for the per-resample curves (resampled fits only; single fits emit only
+#' the aggregate row). Regression results and classifiers without predicted
+#' probabilities yield a zero-row table.
 #'
 #' @param sup `Supervised` / `SupervisedRes` object.
 #' @param max_points Integer: Cap on curve vertices per group (down-sampled in
 #'   `rtemis::roc_curve` so wide datasets ship a compact line).
 #'
-#' @return `data.table` with columns `split`, `class`, `fpr`, `tpr`, `auc`.
+#' @return `data.table` with columns `split`, `class`, `fold`, `fpr`, `tpr`,
+#'   `auc`.
 #'
 #' @author EDG
 #' @keywords internal
@@ -281,6 +285,7 @@ roc_table <- function(sup, max_points = 1000L) {
   empty <- data.table::data.table(
     split = character(0),
     class = character(0),
+    fold = character(0),
     fpr = numeric(0),
     tpr = numeric(0),
     auc = numeric(0)
@@ -298,6 +303,24 @@ roc_table <- function(sup, max_points = 1000L) {
     test = c(y = "y_test", prob = "predicted_prob_test")
   )
 
+  # Compute a single ROC curve for one (labels, probs) pair and tag its rows
+  # with the owning `split` and `fold`. NULL when the curve can't be formed.
+  curve_for <- function(y, prob, split_name, fold_label) {
+    if (!is.factor(y)) {
+      return(NULL)
+    }
+    curve <- tryCatch(
+      rtemis::roc_curve(y, prob, max_points = max_points),
+      error = function(e) NULL
+    )
+    if (is.null(curve) || NROW(curve) == 0L) {
+      return(NULL)
+    }
+    dt <- data.table::as.data.table(curve)
+    dt[, let(split = split_name, fold = fold_label)]
+    dt
+  }
+
   pieces <- list()
   for (split_name in names(splits)) {
     sp <- splits[[split_name]]
@@ -306,31 +329,37 @@ roc_table <- function(sup, max_points = 1000L) {
     if (is.null(y) || is.null(prob)) {
       next
     }
+
+    # Aggregate curve over predictions pooled across all resamples.
     pooled <- roc_pool_split(y, prob)
-    if (!is.factor(pooled[["y"]])) {
-      next
+    agg <- curve_for(pooled[["y"]], pooled[["prob"]], split_name, "aggregate")
+    if (!is.null(agg)) {
+      pieces[[length(pieces) + 1L]] <- agg
     }
-    curve <- tryCatch(
-      rtemis::roc_curve(
-        pooled[["y"]],
-        pooled[["prob"]],
-        max_points = max_points
-      ),
-      error = function(e) NULL
-    )
-    if (is.null(curve) || NROW(curve) == 0L) {
-      next
+
+    # Per-resample curves: present only when the fit stores per-fold prediction
+    # lists (`SupervisedRes`). One curve per fold, tagged with its fold label.
+    if (is.list(y) && !is.data.frame(y)) {
+      fold_labels <- names(y)
+      if (is.null(fold_labels) || any(!nzchar(fold_labels))) {
+        fold_labels <- as.character(seq_along(y))
+      }
+      prob_is_list <- is.list(prob) && !is.data.frame(prob) && !is.matrix(prob)
+      for (i in seq_along(y)) {
+        prob_i <- if (prob_is_list) prob[[i]] else prob
+        fc <- curve_for(y[[i]], prob_i, split_name, fold_labels[i])
+        if (!is.null(fc)) {
+          pieces[[length(pieces) + 1L]] <- fc
+        }
+      }
     }
-    dt <- data.table::as.data.table(curve)
-    dt[, let(split = split_name)]
-    pieces[[split_name]] <- dt
   }
 
   if (length(pieces) == 0L) {
     return(empty)
   }
   out <- data.table::rbindlist(pieces, use.names = TRUE)
-  data.table::setcolorder(out, c("split", "class", "fpr", "tpr", "auc"))
+  data.table::setcolorder(out, c("split", "class", "fold", "fpr", "tpr", "auc"))
   out[]
 }
 
