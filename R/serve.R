@@ -49,7 +49,10 @@
 #'   (`live.rtemis.org`, `localhost:3000`, etc.).
 #' @param token Optional character scalar: Auth token clients must
 #'   present. `NULL` generates a fresh 8-byte random token.
-#' @param heartbeat_interval Numeric, seconds: Heartbeat tick rate.
+#' @param heartbeat_interval Numeric, seconds: Per-session `heartbeat`
+#'   tick rate. `0` (the default) disables heartbeat emission; pass a
+#'   positive value to re-enable it. The heartbeat carries only live
+#'   daemon/job counts, which clients fetch on demand via `info`.
 #' @param session_ttl Numeric, seconds: Idle-session GC TTL.
 #' @param data_ttl Numeric, seconds: Idle-data-handle GC TTL.
 #' @param gc_interval Numeric, seconds: How often GC runs.
@@ -89,7 +92,7 @@ serve <- function(
   n_daemons = 1L,
   origins = NULL,
   token = NULL,
-  heartbeat_interval = 5,
+  heartbeat_interval = 0,
   session_ttl = 86400,
   data_ttl = 3600,
   gc_interval = 60,

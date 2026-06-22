@@ -327,6 +327,22 @@ test_that("maybe_tick_periodic() respects heartbeat_interval", {
   expect_equal(out[["heartbeats_emitted"]], 1L)
 })
 
+test_that("maybe_tick_periodic() emits no heartbeat when disabled", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  s <- make_server(heartbeat_interval = 0, gc_interval = 3600)
+  conn <- captor_conn()
+  register_connection(s, conn)
+  sess <- new_session("x")
+  attach_connection(sess, conn[["id"]])
+
+  # Even with the timer well past due, a non-positive interval emits nothing.
+  s[["last_heartbeat"]] <- Sys.time() - 1000
+  out <- maybe_tick_periodic(s)
+  expect_equal(out[["heartbeats_emitted"]], 0L)
+  expect_length(conn[["sent"]], 0L)
+})
+
 test_that("gc_tick() returns dropped session ids and updates last_gc", {
   clear_sessions()
   on.exit(clear_sessions(), add = TRUE)

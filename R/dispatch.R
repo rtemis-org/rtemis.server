@@ -112,8 +112,9 @@ connection_session <- function(conn) {
 #' @param origins Character vector. Allowed WS origins.
 #' @param max_concurrent Integer. Cap on concurrent jobs.
 #' @param max_sessions Integer. Cap on sessions.
-#' @param heartbeat_interval Numeric, seconds. How often `heartbeat`
-#'   events are emitted per session.
+#' @param heartbeat_interval Numeric, seconds. Per-session `heartbeat`
+#'   tick rate. `0` (the default) disables emission; a positive value
+#'   re-enables it.
 #' @param session_ttl Numeric, seconds. Idle session TTL for GC.
 #' @param data_ttl Numeric, seconds. Idle data_handle TTL for GC.
 #' @param gc_interval Numeric, seconds. How often GC runs.
@@ -129,7 +130,7 @@ new_server_state <- function(
   origins = .RTEMISLIVE_DEFAULT_ORIGINS,
   max_concurrent = 8L,
   max_sessions = 16L,
-  heartbeat_interval = 5,
+  heartbeat_interval = 0,
   session_ttl = 86400,
   data_ttl = 3600,
   gc_interval = 60,
