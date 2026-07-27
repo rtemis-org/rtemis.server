@@ -81,7 +81,7 @@ test_that("build_super_config builds a SuperConfigLive from the form wire shape"
     dt
   )
   expect_true(inherits(cfg, "rtemis::SuperConfigLive"))
-  expect_equal(prop(cfg, "algorithm"), "GLM")
+  expect_equal(prop(prop(cfg, "hyperparameters"), "algorithm"), "GLM")
   expect_equal(
     prop(prop(cfg, "outer_resampling_config"), "n_resamples"),
     3L
@@ -95,15 +95,14 @@ test_that("build_super_config builds a SuperConfigLive from the form wire shape"
 
 test_that("build_super_config accepts a canonical schema.rtemis.org config", {
   # The object rtemislive stores on a job snapshot and shows in the Config
-  # view: `$schema` markers, nested `{algorithm, hyperparameters}`, and the
-  # same `n_resamples` spelling as the setup formal. It must reach the same
-  # `SuperConfigLive`.
+  # view: `$schema` markers, nested `{algorithm, hyperparameters}` with no
+  # top-level `algorithm`, and the same `n_resamples` spelling as the setup
+  # formal. It must reach the same `SuperConfigLive`.
   dt <- data.table(a = rnorm(20), b = rnorm(20), y = rnorm(20))
   cfg <- build_cfg(
     list(
       `$schema` = "https://schema.rtemis.org/supervised/v1/schema.json",
       data_handle = "d1",
-      algorithm = "GLM",
       hyperparameters = list(
         algorithm = "GLM",
         hyperparameters = list(ifw = FALSE)

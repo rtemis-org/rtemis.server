@@ -345,7 +345,7 @@ test_that("train + job.list + job.status + job.result happy path (GLM regression
     conn,
     make_request(
       "train",
-      params = list(data_handle = handle, algorithm = "glm")
+      params = list(data_handle = handle, algorithm = "GLM")
     ),
     server
   )
@@ -393,7 +393,7 @@ test_that("train rejects missing data_handle / algorithm", {
   conn <- authed_conn(server, attach_session = "s")
   resp <- dispatch_request(
     conn,
-    make_request("train", params = list(algorithm = "glm")),
+    make_request("train", params = list(algorithm = "GLM")),
     server
   )
   expect_false(resp[["ok"]])
@@ -432,7 +432,7 @@ test_that("train accepts preprocessor_config and runs end-to-end", {
       "train",
       params = list(
         data_handle = handle,
-        algorithm = "glm",
+        algorithm = "GLM",
         preprocessor_config = list(scale = TRUE, center = TRUE)
       )
     ),
@@ -475,7 +475,7 @@ test_that("train rejects malformed preprocessor_config with invalid_params", {
       "train",
       params = list(
         data_handle = handle,
-        algorithm = "glm",
+        algorithm = "GLM",
         preprocessor_config = list(no_such_arg = TRUE)
       )
     ),
@@ -494,7 +494,7 @@ test_that("train with unknown data_handle -> not_found", {
     conn,
     make_request(
       "train",
-      params = list(data_handle = "data-nope", algorithm = "glm")
+      params = list(data_handle = "data-nope", algorithm = "GLM")
     ),
     server
   )

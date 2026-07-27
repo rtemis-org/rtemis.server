@@ -143,7 +143,7 @@ test_that("roc_table emits an aggregate plus one curve per resample", {
 
   fit <- rtemis::train(
     dt,
-    algorithm = "glm",
+    hyperparameters = rtemis::setup_GLM(),
     outer_resampling_config = rtemis::setup_Resampler(
       n_resamples = 3L,
       type = "KFold",
@@ -226,7 +226,7 @@ test_that("job.result `predictions` returns Arrow IPC payload for a trained Regr
     conn,
     make_request(
       "train",
-      params = list(data_handle = handle, algorithm = "glm")
+      params = list(data_handle = handle, algorithm = "GLM")
     ),
     server
   )
@@ -297,7 +297,7 @@ test_that("job.result `metrics` returns per-split JSON for a trained Regression"
     conn,
     make_request(
       "train",
-      params = list(data_handle = handle, algorithm = "glm")
+      params = list(data_handle = handle, algorithm = "GLM")
     ),
     server
   )
@@ -374,7 +374,7 @@ test_that("job.result `varimp` returns JSON (no payload) for a trained Supervise
     conn,
     make_request(
       "train",
-      params = list(data_handle = handle, algorithm = "glm")
+      params = list(data_handle = handle, algorithm = "GLM")
     ),
     server
   )
@@ -451,7 +451,7 @@ test_that("job.result `session` returns the execution timeline for a trained Reg
     conn,
     make_request(
       "train",
-      params = list(data_handle = handle, algorithm = "glm")
+      params = list(data_handle = handle, algorithm = "GLM")
     ),
     server
   )

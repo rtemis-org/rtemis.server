@@ -13,19 +13,21 @@
 # already publishes — and a copy that drifts, which is exactly how the
 # resampler vocabulary gap went unnoticed.
 #
-# So the server translates the *wire* and nothing else, which is two things:
+# So the server translates the *wire* and nothing else, which is three things:
 #
 #   1. Frame JSON is decoded with `simplifyVector = FALSE`, so every JSON array
 #      arrives as a list of length-1 atomics where rtemis wants an atomic
 #      vector (`.collapse_scalar_lists()`).
 #   2. An empty `positive_class` means "unset" to a client but would be a real
 #      outcome level to rtemis (`.from_wire()`).
+#   3. The wire carries `algorithm` beside a flat hyperparameter map, the shape
+#      of a `setup_*()` call; a config nests the two (`.nest_hyperparameters()`).
 #
 # Everything after that is a `.list_to_*()` call.
 #
 # This layer performs no *name* translation: field names are identical across
 # the rtemislive form, the wire, the rtemis config object and the published
-# schema.
+# schema. Shape differs; names do not.
 
 #' Collapse JSON-array values into atomic vectors
 #'
@@ -99,6 +101,37 @@
 }
 
 
+#' Nest the wire's `algorithm` + flat hyperparameter map
+#'
+#' The wire speaks `setup_*()` formals: `algorithm` names the learner and
+#' `hyperparameters` is its flat name -> value map, which is what the
+#' `algorithm.describe` schema publishes and what rtemislive's form emits. A
+#' `SuperConfig` names the algorithm once, inside `hyperparameters`, as the
+#' discriminator of the `{algorithm, hyperparameters}` union. This is the
+#' flat-wire / nested-config shape difference, and lifting it here leaves
+#' rtemis's reconstructor with exactly one shape to accept.
+#'
+#' @param params Named list of wire params.
+#'
+#' @return `params` with `algorithm` folded into `hyperparameters`.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+.nest_hyperparameters <- function(params) {
+  algorithm <- params[["algorithm"]]
+  if (is.null(algorithm)) {
+    return(params)
+  }
+  params[["algorithm"]] <- NULL
+  params[["hyperparameters"]] <- list(
+    algorithm = algorithm,
+    hyperparameters = params[["hyperparameters"]] %||% list()
+  )
+  params
+}
+
+
 #' Build a `SuperConfigLive` from wire params
 #'
 #' Delegates the whole config to `rtemis::read_config()`'s own reconstructor and
@@ -118,7 +151,9 @@
 #' @keywords internal
 #' @noRd
 build_super_config <- function(params, dat_training) {
-  args <- S7::props(.list_to_SuperConfig(.from_wire(params)))
+  args <- S7::props(.list_to_SuperConfig(.nest_hyperparameters(.from_wire(
+    params
+  ))))
   # Drop the path trio in favour of the data itself, and drop `outdir` so the
   # live default (NULL) applies: a portable recipe defaults it to "results/",
   # but a live run writes nothing to disk and hands its result back over the
