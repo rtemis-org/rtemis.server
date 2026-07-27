@@ -1272,7 +1272,7 @@ handle_data_delete <- function(conn, frame, server) {
 #' - `preprocessor_config`, `decomposition_config`, `tuner_config`,
 #'   `outer_resampling_config`, `execution_config` - JSON objects
 #' - `weights` - character; column name in the dataset used as weights
-#' - `positive_case` - character; binary-classification positive class
+#' - `positive_class` - character; binary-classification positive class
 #' - `question` - character; user-provided label for the run
 #'
 #' @author EDG

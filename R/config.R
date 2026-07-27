@@ -18,10 +18,15 @@
 #   1. Frame JSON is decoded with `simplifyVector = FALSE`, so every JSON array
 #      arrives as a list of length-1 atomics where rtemis wants an atomic
 #      vector (`.collapse_scalar_lists()`).
-#   2. rtemislive's forms are generated from `setup_*()` formals, so two names
-#      differ from the config property they set (`.from_wire()`).
+#   2. An empty `positive_class` means "unset" to a client but would be a real
+#      outcome level to rtemis (`.from_wire()`).
 #
 # Everything after that is a `.list_to_*()` call.
+#
+# This layer performs no *name* translation: field names are identical across
+# the rtemislive form, the wire, the rtemis config object and the published
+# schema. A name that differs between two of our own components is a bug in one
+# of them, not something to absorb here.
 
 #' Collapse JSON-array values into atomic vectors
 #'
@@ -65,17 +70,13 @@
 #' The wire speaks `setup_*()` formals — that is what the `*.describe` methods
 #' publish and what rtemislive's forms are generated from. rtemis's config
 #' objects, and the schemas at schema.rtemis.org, speak *object property*
-#' names. The two coincide everywhere except the single rename below, so this
-#' is the whole of the vocabulary translation; clients that already send the
-#' schema vocabulary pass through untouched.
+#' names. The two vocabularies coincide, so this function performs no renaming:
+#' it collapses scalar lists and normalizes one empty-string value.
 #'
 #' Extra keys need no handling: every `.list_to_*()` reads the properties it
 #' knows and ignores the rest, so `verbosity`, a stray `train_p` on a KFold, or
-#' a `$schema` marker all fall away on their own.
-#' NOTE: that permissiveness is itself slated for removal — the
-#' `.list_to_*()` reconstructors are to reject unknown keys rather than ignore
-#' them (see rtemis `plan/wire-vocabulary.md`), at which point the forms must
-#' stop emitting non-config formals and this comment becomes wrong.
+#' a `$schema` marker all fall away on their own. (Do not build on that: strict
+#' rejection of unknown keys is planned — see rtemis `plan/wire-vocabulary.md`.)
 #'
 #' @param params Named list of wire params.
 #'
@@ -86,14 +87,14 @@
 #' @noRd
 .from_wire <- function(params) {
   params <- .collapse_scalar_lists(params)
-  # (`n_resamples` needed no translation as of rtemis 2026-07: the
-  # `ResamplerConfig` property was renamed from `n` to `n_resamples`, so the
-  # setup formal and the config property now agree.)
-  # `train(positive_case =)` sets `SuperConfig@positive_class`. Empty string is
-  # the client's "unset" for a non-binary target.
-  pc <- params[["positive_case"]]
-  if (is.character(pc) && length(pc) == 1L && nzchar(pc)) {
-    params[["positive_class"]] <- pc
+  # An empty `positive_class` is a client's "no selection" (a select with
+  # nothing chosen, or a non-binary target). Map it to NULL, which is rtemis's
+  # unset value and means "use the second factor level" — the positive-class
+  # convention for binary classification. Left as `""` it would be stored as a
+  # real outcome level.
+  pc <- params[["positive_class"]]
+  if (is.character(pc) && length(pc) == 1L && !nzchar(pc)) {
+    params[["positive_class"]] <- NULL
   }
   params
 }

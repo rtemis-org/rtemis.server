@@ -39,8 +39,8 @@ test_that(".collapse_scalar_lists leaves JSON objects as lists", {
 
 
 test_that(".from_wire passes the resampler's `n_resamples` through untouched", {
-  # rtemis renamed `ResamplerConfig@n` to `n_resamples` (2026-07), so the setup
-  # formal and the config property now agree and no translation is needed.
+  # The setup formal and the config property share one name, so no translation
+  # is needed.
   out <- from_wire(list(
     outer_resampling_config = list(type = "KFold", n_resamples = 5L)
   ))
@@ -49,9 +49,12 @@ test_that(".from_wire passes the resampler's `n_resamples` through untouched", {
 })
 
 
-test_that(".from_wire maps `positive_case` to `positive_class`, ignoring empty", {
-  expect_equal(from_wire(list(positive_case = "a"))[["positive_class"]], "a")
-  expect_null(from_wire(list(positive_case = ""))[["positive_class"]])
+test_that(".from_wire passes `positive_class` through, dropping empty", {
+  # An empty string is a client's "no selection"; NULL is rtemis's unset value
+  # and means "use the second factor level". `""` must not reach rtemis, where
+  # it would be stored as a real outcome level.
+  expect_equal(from_wire(list(positive_class = "a"))[["positive_class"]], "a")
+  expect_null(from_wire(list(positive_class = ""))[["positive_class"]])
   expect_null(from_wire(list())[["positive_class"]])
 })
 
@@ -72,7 +75,7 @@ test_that("build_super_config builds a SuperConfigLive from the form wire shape"
         train_p = 0.75,
         verbosity = 1L
       ),
-      positive_case = "",
+      positive_class = "",
       question = "does it build?"
     ),
     dt
