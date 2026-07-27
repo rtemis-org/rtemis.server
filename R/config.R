@@ -25,8 +25,7 @@
 #
 # This layer performs no *name* translation: field names are identical across
 # the rtemislive form, the wire, the rtemis config object and the published
-# schema. A name that differs between two of our own components is a bug in one
-# of them, not something to absorb here.
+# schema.
 
 #' Collapse JSON-array values into atomic vectors
 #'
