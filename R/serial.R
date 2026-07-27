@@ -437,6 +437,41 @@ varimp_table <- function(sup) {
 }
 
 
+# %% Session timeline table --------------------------------------------------
+
+#' Execution timeline table for the `session` slice
+#'
+#' Flattens the observability session captured on a `Supervised` /
+#' `SupervisedRes` result (`@session`, recorded by `rtemis::train()`) into the
+#' timeline table produced by [rtemis::session_timeline()]: one row per
+#' execution node in depth-first order, with columns `label`, `start`, `end`
+#' (milliseconds from session start), `kind`, `status`, `failed`, and `tip`.
+#' The per-kind fill colors ship separately in the slice pointer (see
+#' `handle_job_result`), via [rtemis::session_kind_colors()].
+#'
+#' @param sup `Supervised` / `SupervisedRes` object.
+#'
+#' @return `data.table`, or `NULL` when the result is not a supervised model,
+#'   carries no session, or the session recorded no events.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+session_table <- function(sup) {
+  if (
+    !inherits(sup, "rtemis::Supervised") &&
+      !inherits(sup, "rtemis::SupervisedRes")
+  ) {
+    return(NULL)
+  }
+  session <- prop(sup, "session")
+  if (is.null(session) || length(prop(session, "events")) == 0L) {
+    return(NULL)
+  }
+  rtemis::session_timeline(session)
+}
+
+
 # %% Decomposition slices ---------------------------------------------------
 
 #' Projection matrix for the `transformed` slice
