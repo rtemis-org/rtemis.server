@@ -74,10 +74,10 @@
 #' names. The two vocabularies coincide, so this function performs no renaming:
 #' it collapses scalar lists and normalizes one empty-string value.
 #'
-#' Extra keys need no handling: every `.list_to_*()` reads the properties it
-#' knows and ignores the rest, so `verbosity`, a stray `train_p` on a KFold, or
-#' a `$schema` marker all fall away on their own. (Do not build on that: strict
-#' rejection of unknown keys is planned — see rtemis `plan/wire-vocabulary.md`.)
+#' rtemis's `.list_to_*()` reconstructors now **reject** a key the config does
+#' not declare, so transport params must be removed here rather than left for
+#' rtemis to ignore. `.TRANSPORT_KEYS` names them; anything else unknown is a
+#' real mistake and should surface as an error.
 #'
 #' @param params Named list of wire params.
 #'
@@ -86,8 +86,16 @@
 #' @author EDG
 #' @keywords internal
 #' @noRd
+# Wire params that address the *transport*, not the config: `data_handle` names
+# in-memory data the frame already resolved, and rtemis's `SuperConfig` speaks
+# `dat_training_path`. Removed before the config is built, since rtemis no
+# longer ignores what it does not declare.
+.TRANSPORT_KEYS <- c("data_handle")
+
+
 .from_wire <- function(params) {
   params <- .collapse_scalar_lists(params)
+  params[.TRANSPORT_KEYS] <- NULL
   # An empty `positive_class` is a client's "no selection" (a select with
   # nothing chosen, or a non-binary target). Map it to NULL, which is rtemis's
   # unset value and means "use the second factor level" — the positive-class

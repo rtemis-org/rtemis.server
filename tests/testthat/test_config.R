@@ -67,14 +67,10 @@ test_that("build_super_config builds a SuperConfigLive from the form wire shape"
       algorithm = "GLM",
       hyperparameters = list(ifw = FALSE),
       preprocessor_config = list(scale = TRUE, center = TRUE),
-      # Every `setup_Resampler()` formal, as the form emits them: the rename,
-      # plus `train_p` / `verbosity`, which a KFold config does not carry.
-      outer_resampling_config = list(
-        type = "KFold",
-        n_resamples = 3L,
-        train_p = 0.75,
-        verbosity = 1L
-      ),
+      # The selected variant's fields and no others: rtemislive's form is
+      # built from the KFold leaf schema, so it cannot offer `train_p` or
+      # `verbosity`, and rtemis would now reject them if it did.
+      outer_resampling_config = list(type = "KFold", n_resamples = 3L),
       positive_class = "",
       question = "does it build?"
     ),
@@ -90,6 +86,38 @@ test_that("build_super_config builds a SuperConfigLive from the form wire shape"
   # Live runs write nothing to disk.
   expect_null(prop(cfg, "outdir"))
   expect_identical(prop(cfg, "dat_training"), dt)
+})
+
+
+test_that("a key the config does not declare is rejected, not dropped", {
+  # rtemis's reconstructors are strict, so a stale or mistyped key surfaces
+  # here instead of training something other than what was asked for. This is
+  # what `.from_wire()` must not paper over: only transport keys are stripped.
+  dt <- data.table(a = rnorm(20), b = rnorm(20), y = rnorm(20))
+  err <- tryCatch(
+    build_cfg(
+      list(
+        data_handle = "d1",
+        algorithm = "GLM",
+        outer_resampling_config = list(
+          type = "KFold",
+          n_resamples = 3L,
+          train_p = 0.75
+        )
+      ),
+      dt
+    ),
+    error = function(e) e
+  )
+  expect_s3_class(err, "rtemis_value_error")
+  expect_match(conditionMessage(err), "train_p", fixed = TRUE)
+})
+
+
+test_that("transport keys are stripped before the config is built", {
+  # `data_handle` addresses the frame, not the config; rtemis has no such
+  # property and would reject it.
+  expect_false("data_handle" %in% names(from_wire(list(data_handle = "d1"))))
 })
 
 
