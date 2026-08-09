@@ -478,7 +478,7 @@ test_that("session.join by name and by id both attach", {
   conn3 <- authed_conn(server)
   resp_byid <- dispatch_request(
     conn3,
-    make_request("session.join", params = list(id = sid)),
+    make_request("session.join", params = list(session_id = sid)),
     server
   )
   expect_true(resp_byid[["ok"]])

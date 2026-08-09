@@ -112,8 +112,9 @@ connection_session <- function(conn) {
 #' @param origins Character vector. Allowed WS origins.
 #' @param max_concurrent Integer. Cap on concurrent jobs.
 #' @param max_sessions Integer. Cap on sessions.
-#' @param heartbeat_interval Numeric, seconds. How often `heartbeat`
-#'   events are emitted per session.
+#' @param heartbeat_interval Numeric, seconds. Per-session `heartbeat`
+#'   tick rate. `0` (the default) disables emission; a positive value
+#'   re-enables it.
 #' @param session_ttl Numeric, seconds. Idle session TTL for GC.
 #' @param data_ttl Numeric, seconds. Idle data_handle TTL for GC.
 #' @param gc_interval Numeric, seconds. How often GC runs.
@@ -129,7 +130,7 @@ new_server_state <- function(
   origins = .RTEMISLIVE_DEFAULT_ORIGINS,
   max_concurrent = 8L,
   max_sessions = 16L,
-  heartbeat_interval = 5,
+  heartbeat_interval = 0,
   session_ttl = 86400,
   data_ttl = 3600,
   gc_interval = 60,
@@ -460,21 +461,49 @@ handle_decomp_algorithms <- function(conn, frame, server) {
 }
 
 
+# Enumerated choices declared by a config object's S7 properties.
+#
+# rtemis declares an argument's admissible values once, on the property
+# (`prop_string(enum = ...)`), and validates against that list there. A
+# `setup_*()` formal usually carries only the default value, so reading the
+# enum off the built object is what lets `describe` report every choice — with
+# no second copy of the list to drift, and no arg left rendering as a free-text
+# box in the client just because its signature is a scalar.
+prop_enums <- function(config) {
+  if (!inherits(config, "S7_object")) {
+    return(list())
+  }
+  Filter(
+    length,
+    lapply(S7::S7_class(config)@properties, function(p) {
+      spec <- p[["spec"]] # NULL unless built by a `prop_*` factory
+      if (is.null(spec)) NULL else as.list(prop(spec, "enum"))
+    })
+  )
+}
+
+
 # Build the schema for one setup_*() function.
 #
 # Walks the formals, classifying each arg as:
-# - choices = c("a", "b", ...) -> enum with the first value as default
+# - enumerated (property enum, or a `c("a", "b", ...)` formal) -> `choices`,
+#   with the first value as the default
 # - any other multi-element default -> flattened to its first element
 # - single-value default (or NULL) -> reported as-is
 #
 # `tunable_set` is the set of arg names considered tunable. For
 # algorithm hyperparameters this is `Hyperparameters@tunable_hyperparameters`;
 # for resampler / other configs pass `character(0)`.
+#
+# `config` is the object `setup_fn()` builds, when the caller has one; it
+# carries the property enums (see `prop_enums`).
 .live_build_schema <- function(
   setup_fn,
   hp_values = list(),
-  tunable_set = character()
+  tunable_set = character(),
+  config = NULL
 ) {
+  enums <- prop_enums(config)
   fmls <- formals(setup_fn)
   lapply(names(fmls), function(arg) {
     raw <- fmls[[arg]]
@@ -484,16 +513,19 @@ handle_decomp_algorithms <- function(conn, frame, server) {
     if (is.symbol(raw) && as.character(raw) %in% names(fmls)) {
       raw <- fmls[[as.character(raw)]]
     }
-    # Enumerated choices: `c("a", "b", ...)` - keep choices, default is first.
-    choices <- NULL
     default <- tryCatch(
       eval(raw, envir = asNamespace("rtemis")),
       error = function(e) NULL
     )
-    if (is.character(default) && length(default) > 1L) {
-      choices <- as.list(default)
-      default <- default[[1L]]
-    } else if (length(default) > 1L) {
+    # Enumerated choices come from the property, which is where rtemis declares
+    # and validates them; the `match.arg`-style `c("a", "b", ...)` formal is the
+    # fallback for schemas built without an object (`resampler.describe`, whose
+    # `type` selects the subclass and so has no single object to read).
+    choices <- enums[[arg]] %||%
+      if (is.character(default) && length(default) > 1L) as.list(default)
+    # A multi-value default is the `match.arg` idiom: `setup_fn()` uses the
+    # first element.
+    if (length(default) > 1L) {
       default <- default[[1L]]
     }
     # Fall back to the constructed Hyperparameters value when the formal
@@ -593,7 +625,7 @@ handle_algorithm_describe <- function(conn, frame, server) {
     list()
   }
 
-  hyperparameters <- .live_build_schema(setup_fn, hp_values, tunable_set)
+  hyperparameters <- .live_build_schema(setup_fn, hp_values, tunable_set, hp)
 
   alg_row <- tryCatch(
     asNamespace("rtemis")[["supervised_algorithms"]],
@@ -686,7 +718,8 @@ handle_decomp_algorithm_describe <- function(conn, frame, server) {
   hyperparameters <- .live_build_schema(
     setup_fn,
     cfg_values,
-    tunable_set = character()
+    tunable_set = character(),
+    config = cfg
   )
 
   alg_tbl <- tryCatch(
@@ -807,7 +840,8 @@ handle_cluster_algorithm_describe <- function(conn, frame, server) {
   hyperparameters <- .live_build_schema(
     setup_fn,
     cfg_values,
-    tunable_set = character()
+    tunable_set = character(),
+    config = cfg
   )
 
   alg_tbl <- tryCatch(
@@ -873,7 +907,7 @@ handle_preprocessor_describe <- function(conn, frame, server) {
   skip <- "impute_missRanger_params"
   parameters <- Filter(
     function(p) !(p[["name"]] %in% skip),
-    .live_build_schema(setup_Preprocessor)
+    .live_build_schema(setup_Preprocessor, config = setup_Preprocessor())
   )
   make_response(req_id, list(parameters = parameters))
 }
@@ -1220,76 +1254,25 @@ handle_data_delete <- function(conn, frame, server) {
 
 # %% Job handlers ------------------------------------------------------------
 
-#' Collapse list-of-scalars values to atomic vectors
-#'
-#' Frame-level JSON decode uses `simplifyVector = FALSE` (heterogeneous
-#' payloads survive intact), so a JSON array like `[100, 500, 1000]`
-#' arrives as an R *list* of length-1 atomics, not a numeric vector.
-#' rtemis's `setup_<Algorithm>()` validators and downstream tuner
-#' (which branches on `length(x) > 1`) need atomic vectors.
-#'
-#' Walks the named list and, for every value that is a non-empty list
-#' whose elements are all length-1 atomics, replaces it with the
-#' corresponding atomic vector (`unlist`, no names). One-element lists
-#' (e.g. user typed a single value with Tune toggled on) collapse to a
-#' scalar; multi-element lists become a proper vector that drives the
-#' tuner. Values that aren't list-of-scalars are returned unchanged -
-#' notably nested lists like `inbag` survive verbatim.
-#'
-#' Module-scope (not nested inside `handle_train`) so tests can verify
-#' the wire-shape collapse directly without standing up a full handler.
-#'
-#' @param hp Named list as decoded from the wire `hyperparameters`
-#'   payload.
-#'
-#' @return Named list with the same keys; values either left as-is or
-#'   unlisted from scalar-list to atomic vector.
-#'
-#' @author EDG
-#' @keywords internal
-#' @noRd
-.collapse_scalar_lists <- function(hp) {
-  if (!is.list(hp)) {
-    return(hp)
-  }
-  lapply(hp, function(v) {
-    if (
-      is.list(v) &&
-        length(v) > 0L &&
-        all(vapply(
-          v,
-          function(x) is.atomic(x) && length(x) == 1L,
-          logical(1)
-        ))
-    ) {
-      unlist(v, use.names = FALSE)
-    } else {
-      v
-    }
-  })
-}
-
-
 #' `train` handler
 #'
-#' Submits a supervised-learning job. Builds a `SuperConfigLive` from the
-#' wire params (with in-memory data resolved from `data_handle`) and
-#' dispatches through `train()`. This wires preprocessor / tuner /
-#' resampler / execution config through end-to-end.
+#' Submits a supervised-learning job. Hands the wire params to
+#' `build_super_config()` — which delegates to rtemis's own config
+#' reconstructor and binds the in-memory data resolved from `data_handle` —
+#' then dispatches through `train()`.
 #'
-#' Wire params (all optional except `data_handle`, `algorithm`):
+#' Wire params mirror `SuperConfig`'s properties one for one, so the block
+#' shapes are documented by the schemas at schema.rtemis.org rather than
+#' restated here. All optional except `data_handle` and `algorithm`:
 #'
 #' - `data_handle` - id of a previously-uploaded dataset on this session
 #' - `algorithm` - character, see `algorithms` method
-#' - `hyperparameters` - JSON object matching one of the `setup_*` shapes
-#' - `preprocessor_config` - JSON object accepted by `setup_Preprocessor()`
-#' - `decomposition_config` - JSON object `{ algorithm, ... }` accepted by
-#'   `rtemis::.list_to_DecompositionConfig()`
-#' - `tuner_config` - JSON object accepted by `rtemis::.list_to_TunerConfig()`
-#' - `outer_resampling_config` - JSON object accepted by
-#'   `rtemis::.list_to_ResamplerConfig()`
-#' - `execution_config` - JSON object accepted by `setup_ExecutionConfig()`
+#' - `hyperparameters` - flat `name -> value` map, or the nested
+#'   `{ algorithm, hyperparameters }` shape
+#' - `preprocessor_config`, `decomposition_config`, `tuner_config`,
+#'   `outer_resampling_config`, `execution_config` - JSON objects
 #' - `weights` - character; column name in the dataset used as weights
+#' - `positive_class` - character; binary-classification positive class
 #' - `question` - character; user-provided label for the run
 #'
 #' @author EDG
@@ -1311,107 +1294,19 @@ handle_train <- function(conn, frame, server) {
   s <- connection_session(conn)
   data_dt <- get_data(s, data_handle)
 
-  # Binary-classification positive class. The client sends `positive_case`
-  # only for a 2-level categorical target; it is forwarded to the config and
-  # applied by train() via set_positive_class(). Normalize empty → NULL.
-  positive_case <- params[["positive_case"]]
-  if (
-    !is.character(positive_case) ||
-      length(positive_case) != 1L ||
-      !nzchar(positive_case)
-  ) {
-    positive_case <- NULL
-  }
-
-  parse_or_abort <- function(value, builder, what) {
-    if (is.null(value)) {
-      return(NULL)
+  cfg <- tryCatch(
+    build_super_config(params, data_dt),
+    error = function(e) {
+      # Include the parent's message in the wire text so the browser surfaces
+      # the specific reason (which block, which hyperparameter). The condition
+      # object still carries `parent = e` for programmatic handlers.
+      rtemis.core::abort(
+        "Could not build training config: ",
+        conditionMessage(e),
+        parent = e,
+        class = "rtemislive_invalid_params"
+      )
     }
-    tryCatch(
-      builder(value),
-      error = function(e) {
-        # Include the parent's message in the wire text so the browser
-        # surfaces the specific reason (e.g. which hyperparameter failed
-        # to parse). The condition object still carries `parent = e` for
-        # programmatic handlers.
-        rtemis.core::abort(
-          "Could not parse ",
-          what,
-          ": ",
-          conditionMessage(e),
-          parent = e,
-          class = "rtemislive_invalid_params"
-        )
-      }
-    )
-  }
-
-  # `list_to_Hyperparameters` expects `{ algorithm, hyperparameters }`,
-  # but on the wire the algorithm is already a sibling param and
-  # `hyperparameters` is just the flat name->value map produced by the UI.
-  # Bundle them before parsing.
-  hp <- if (is.null(params[["hyperparameters"]])) {
-    NULL
-  } else {
-    parse_or_abort(
-      list(
-        algorithm = algorithm,
-        hyperparameters = .collapse_scalar_lists(params[["hyperparameters"]])
-      ),
-      rtemis::.list_to_Hyperparameters,
-      "hyperparameters"
-    )
-  }
-  prp <- parse_or_abort(
-    params[["preprocessor_config"]],
-    function(v) do.call(setup_Preprocessor, v),
-    "preprocessor_config"
-  )
-  # Decomposition config arrives flat (`{ algorithm, <params> }`) from the UI;
-  # `.list_to_DecompositionConfig()` validates the algorithm is one whose
-  # transform can be applied on new data and dispatches to its `setup_*()`.
-  dcmp <- parse_or_abort(
-    params[["decomposition_config"]],
-    rtemis::.list_to_DecompositionConfig,
-    "decomposition_config"
-  )
-  tn <- parse_or_abort(
-    params[["tuner_config"]],
-    rtemis::.list_to_TunerConfig,
-    "tuner_config"
-  )
-  # UI form is built from `setup_Resampler()` formals (n_resamples, type,
-  # train_p, ...), so dispatch through `setup_Resampler()` rather than
-  # `list_to_ResamplerConfig()` which expects the post-construction
-  # property names (`n`, ...).
-  rs <- parse_or_abort(
-    params[["outer_resampling_config"]],
-    function(v) do.call(setup_Resampler, v),
-    "outer_resampling_config"
-  )
-  ec <- parse_or_abort(
-    params[["execution_config"]],
-    function(v) do.call(setup_ExecutionConfig, v),
-    "execution_config"
-  )
-  if (is.null(ec)) {
-    ec <- setup_ExecutionConfig()
-  }
-
-  cfg <- setup_SuperConfigLive(
-    dat_training = data_dt,
-    weights = params[["weights"]],
-    positive_class = positive_case,
-    preprocessor_config = prp,
-    decomposition_config = dcmp,
-    algorithm = algorithm,
-    hyperparameters = hp,
-    tuner_config = tn,
-    outer_resampling_config = rs,
-    execution_config = ec,
-    question = params[["question"]],
-    outdir = NULL,
-    verbosity = 1L
   )
 
   # `progress` callback: `forward_progress` calls rtemis's internal
@@ -1441,26 +1336,31 @@ handle_train <- function(conn, frame, server) {
 }
 
 
-#' `decomp` handler
+#' Unsupervised (`decomp` / `cluster`) handler
 #'
-#' Submits an unsupervised decomposition job. Builds a
-#' `<Algo>DecompositionConfig` from the wire params, optionally subsets
-#' the dataset to a feature list, and dispatches through
-#' `rtemis::decomp()`.
+#' `decomp` and `cluster` are the same job: resolve the algorithm, optionally
+#' subset the dataset to a feature list, build the algorithm's config from the
+#' wire params, and submit. Only the algorithm catalogue and the rtemis entry
+#' point differ, so both live here and `handle_decomp()` / `handle_cluster()`
+#' are one line each.
 #'
 #' Wire params (all optional except `data_handle`, `algorithm`):
 #'
 #' - `data_handle` - id of a previously-uploaded dataset on this session
-#' - `algorithm` - character, one of `decomp.algorithms`
-#' - `hyperparameters` - JSON object accepted by `setup_<Algo>()`
-#' - `features` - character[]; subset of columns to decompose. When
-#'   omitted, all columns are used.
+#' - `algorithm` - character, one of `<kind>.algorithms`
+#' - `hyperparameters` - flat `name -> value` map accepted by `setup_<Algo>()`.
+#'   A canonical `DecompositionConfig` / `ClusteringConfig` nests the same map
+#'   under `config`; both keys are read.
+#' - `features` - character[]; subset of columns to use. Omitted = all columns.
 #' - `question` - character; user-provided label for the run
+#'
+#' @param kind Character: `"decomp"` or `"cluster"`, keying `unsupervised_kinds`.
 #'
 #' @author EDG
 #' @keywords internal
 #' @noRd
-handle_decomp <- function(conn, frame, server) {
+handle_unsupervised <- function(conn, frame, server, kind) {
+  spec <- unsupervised_kinds[[kind]]
   req_id <- frame[["header"]][["id"]] %||% NA_character_
   params <- frame[["header"]][["params"]] %||% list()
 
@@ -1473,73 +1373,37 @@ handle_decomp <- function(conn, frame, server) {
     )
   }
 
+  # Normalizes casing and rejects anything not in the catalogue.
   alg_name <- tryCatch(
-    get_decom_name(algorithm),
+    spec[["get_name"]](algorithm),
     error = function(e) {
       rtemis.core::abort(
-        paste0("Unknown decomposition algorithm `", algorithm, "`."),
+        paste0("Unknown ", spec[["label"]], " algorithm `", algorithm, "`."),
         class = "rtemislive_not_found"
       )
     }
   )
 
   s <- connection_session(conn)
-  data_dt <- get_data(s, data_handle)
+  x <- subset_features(get_data(s, data_handle), params[["features"]])
 
-  features <- params[["features"]]
-  if (!is.null(features)) {
-    features <- unlist(features, use.names = FALSE)
-    if (
-      !is.character(features) ||
-        length(features) == 0L ||
-        any(!nzchar(features))
-    ) {
-      rtemis.core::abort(
-        "`features` must be a non-empty character vector.",
-        class = "rtemislive_invalid_params"
-      )
-    }
-    missing_cols <- setdiff(features, colnames(data_dt))
-    if (length(missing_cols) > 0L) {
-      rtemis.core::abort(
-        paste0(
-          "Features not in dataset: ",
-          paste(missing_cols, collapse = ", "),
-          "."
-        ),
-        class = "rtemislive_invalid_params"
-      )
-    }
-    x <- data_dt[, features, with = FALSE]
-  } else {
-    x <- data_dt
-  }
-
-  # Build `<Algo>DecompositionConfig` via `setup_<Algo>(...)`. The wire
-  # `hyperparameters` payload is a flat name->value map matching the
-  # setup function's formals; scalar JSON arrays are collapsed before
-  # `do.call` so atomic args arrive as scalars rather than length-1
-  # lists.
-  setup_fn_name <- paste0("setup_", alg_name)
-  setup_fn <- tryCatch(
-    get(setup_fn_name, envir = asNamespace("rtemis")),
-    error = function(e) {
-      rtemis.core::abort(
-        paste0("No setup function for `", alg_name, "`."),
-        class = "rtemislive_internal_error"
-      )
-    }
-  )
-  hp <- if (is.null(params[["hyperparameters"]])) {
-    list()
-  } else {
-    .collapse_scalar_lists(params[["hyperparameters"]])
-  }
+  # The wire sends the form's flat name -> value map as `hyperparameters`; a
+  # canonical config nests the same map under `config`. `.drop_meta_keys()`
+  # strips `$`-prefixed document metadata (`$schema`) that a config lifted from
+  # a schema.rtemis.org file carries; any other unknown key still errors.
+  hp <- params[["config"]] %||% params[["hyperparameters"]] %||% list()
   cfg <- tryCatch(
-    do.call(setup_fn, as.list(hp)),
+    do.call(
+      # rtemis exports every `setup_<Algo>()`; `alg_name` came from the
+      # catalogue, so the lookup cannot miss.
+      getExportedValue("rtemis", paste0("setup_", alg_name)),
+      as.list(rtemis::.drop_meta_keys(.collapse_scalar_lists(hp)))
+    ),
     error = function(e) {
       rtemis.core::abort(
-        "Could not build decomposition config: ",
+        "Could not build ",
+        spec[["label"]],
+        " config: ",
         conditionMessage(e),
         parent = e,
         class = "rtemislive_invalid_params"
@@ -1547,19 +1411,16 @@ handle_decomp <- function(conn, frame, server) {
     }
   )
 
-  # No `progress` callback: rtemis::decomp() has no fold-boundary
-  # checkpoints. The daemon-side msg sink (set up by
-  # `init_daemon_progress`) still ships every internal `msg()` call from
-  # `decomp()` (data summary, "Decomposing with PCA...", outro) as a
-  # progress envelope, so the browser gets inline status without any
-  # per-handler wiring.
+  # No `progress` callback: neither entry point has fold-boundary checkpoints.
+  # The daemon-side msg sink (set up by `init_daemon_progress`) still ships
+  # every internal `msg()` call (data summary, "Decomposing with PCA...",
+  # outro) as a progress envelope, so the browser gets inline status without
+  # any per-handler wiring.
   job <- submit_job(
     session = s,
-    type = "decomp",
+    type = kind,
     params = params,
-    expr = quote(
-      rtemis::decomp(x, algorithm = alg_name, config = cfg, verbosity = 1L)
-    ),
+    expr = spec[["expr"]],
     env = list(x = x, alg_name = alg_name, cfg = cfg),
     max_concurrent = server[["max_concurrent"]] %||% 8L
   )
@@ -1572,123 +1433,90 @@ handle_decomp <- function(conn, frame, server) {
 }
 
 
+#' Per-kind slots for `handle_unsupervised()`
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+unsupervised_kinds <- list(
+  decomp = list(
+    label = "decomposition",
+    get_name = function(algorithm) get_decom_name(algorithm),
+    expr = quote(
+      rtemis::decomp(x, algorithm = alg_name, config = cfg, verbosity = 1L)
+    )
+  ),
+  cluster = list(
+    label = "clustering",
+    get_name = function(algorithm) get_clust_name(algorithm),
+    expr = quote(
+      rtemis::cluster(x, algorithm = alg_name, config = cfg, verbosity = 1L)
+    )
+  )
+)
+
+
+#' Restrict a dataset to a requested feature subset
+#'
+#' @param data_dt `data.table`: Dataset resolved from a `data_handle`.
+#' @param features Character[] or NULL: Requested columns. NULL = all columns.
+#'
+#' @return `data.table`.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+subset_features <- function(data_dt, features) {
+  if (is.null(features)) {
+    return(data_dt)
+  }
+  features <- unlist(features, use.names = FALSE)
+  if (
+    !is.character(features) || length(features) == 0L || any(!nzchar(features))
+  ) {
+    rtemis.core::abort(
+      "`features` must be a non-empty character vector.",
+      class = "rtemislive_invalid_params"
+    )
+  }
+  missing_cols <- setdiff(features, colnames(data_dt))
+  if (length(missing_cols) > 0L) {
+    rtemis.core::abort(
+      paste0(
+        "Features not in dataset: ",
+        paste(missing_cols, collapse = ", "),
+        "."
+      ),
+      class = "rtemislive_invalid_params"
+    )
+  }
+  data_dt[, features, with = FALSE]
+}
+
+
+#' `decomp` handler
+#'
+#' Submits an unsupervised decomposition job through `rtemis::decomp()`.
+#' See `handle_unsupervised()` for the wire params.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+handle_decomp <- function(conn, frame, server) {
+  handle_unsupervised(conn, frame, server, "decomp")
+}
+
+
 #' `cluster` handler
 #'
-#' Submits an unsupervised clustering job. Builds a
-#' `<Algo>ClusteringConfig` from the wire params, optionally subsets
-#' the dataset to a feature list, and dispatches through
-#' `rtemis::cluster()`. Parallel to `handle_decomp()`.
-#'
-#' Wire params (all optional except `data_handle`, `algorithm`):
-#'
-#' - `data_handle` - id of a previously-uploaded dataset on this session
-#' - `algorithm` - character, one of `cluster.algorithms`
-#' - `hyperparameters` - JSON object accepted by `setup_<Algo>()`
-#' - `features` - character[]; subset of columns to cluster on. When
-#'   omitted, all columns are used.
-#' - `question` - character; user-provided label for the run
+#' Submits an unsupervised clustering job through `rtemis::cluster()`.
+#' See `handle_unsupervised()` for the wire params.
 #'
 #' @author EDG
 #' @keywords internal
 #' @noRd
 handle_cluster <- function(conn, frame, server) {
-  req_id <- frame[["header"]][["id"]] %||% NA_character_
-  params <- frame[["header"]][["params"]] %||% list()
-
-  data_handle <- params[["data_handle"]]
-  algorithm <- params[["algorithm"]]
-  if (is.null(data_handle) || is.null(algorithm)) {
-    rtemis.core::abort(
-      "`data_handle` and `algorithm` are required.",
-      class = "rtemislive_invalid_params"
-    )
-  }
-
-  alg_name <- tryCatch(
-    asNamespace("rtemis")[["get_clust_name"]](algorithm),
-    error = function(e) {
-      rtemis.core::abort(
-        paste0("Unknown clustering algorithm `", algorithm, "`."),
-        class = "rtemislive_not_found"
-      )
-    }
-  )
-
-  s <- connection_session(conn)
-  data_dt <- get_data(s, data_handle)
-
-  features <- params[["features"]]
-  if (!is.null(features)) {
-    features <- unlist(features, use.names = FALSE)
-    if (
-      !is.character(features) ||
-        length(features) == 0L ||
-        any(!nzchar(features))
-    ) {
-      rtemis.core::abort(
-        "`features` must be a non-empty character vector.",
-        class = "rtemislive_invalid_params"
-      )
-    }
-    missing_cols <- setdiff(features, colnames(data_dt))
-    if (length(missing_cols) > 0L) {
-      rtemis.core::abort(
-        paste0(
-          "Features not in dataset: ",
-          paste(missing_cols, collapse = ", "),
-          "."
-        ),
-        class = "rtemislive_invalid_params"
-      )
-    }
-    x <- data_dt[, features, with = FALSE]
-  } else {
-    x <- data_dt
-  }
-
-  setup_fn_name <- paste0("setup_", alg_name)
-  setup_fn <- tryCatch(
-    get(setup_fn_name, envir = asNamespace("rtemis")),
-    error = function(e) {
-      rtemis.core::abort(
-        paste0("No setup function for `", alg_name, "`."),
-        class = "rtemislive_internal_error"
-      )
-    }
-  )
-  hp <- if (is.null(params[["hyperparameters"]])) {
-    list()
-  } else {
-    .collapse_scalar_lists(params[["hyperparameters"]])
-  }
-  cfg <- tryCatch(
-    do.call(setup_fn, as.list(hp)),
-    error = function(e) {
-      rtemis.core::abort(
-        "Could not build clustering config: ",
-        conditionMessage(e),
-        parent = e,
-        class = "rtemislive_invalid_params"
-      )
-    }
-  )
-
-  job <- submit_job(
-    session = s,
-    type = "cluster",
-    params = params,
-    expr = quote(
-      rtemis::cluster(x, algorithm = alg_name, config = cfg, verbosity = 1L)
-    ),
-    env = list(x = x, alg_name = alg_name, cfg = cfg),
-    max_concurrent = server[["max_concurrent"]] %||% 8L
-  )
-
-  resp <- list(job_id = job[["id"]], status = job[["status"]])
-  if (identical(job[["status"]], "queued")) {
-    resp[["queue_position"]] <- job_queue_position(job)
-  }
-  make_response(req_id, resp)
+  handle_unsupervised(conn, frame, server, "cluster")
 }
 
 
@@ -1771,6 +1599,12 @@ handle_job_cancel <- function(conn, frame, server) {
 #'   table (`split`, `class`, `fold`, `fpr`, `tpr`, `auc`) for classification
 #'   fits, computed by `rtemis::roc_curve`; `fold` is `"aggregate"` for the
 #'   pooled curve and per-resample labels otherwise. Empty pointer otherwise.
+#' - `session`: small JSON pointer + Arrow IPC of the execution-timeline
+#'   table (`label`, `start`, `end`, `kind`, `status`, `failed`, `tip`) built
+#'   by `rtemis::session_timeline` from the model's observability session;
+#'   the pointer carries a `colors` map (`kind` -> hex fill, from
+#'   `rtemis::session_kind_colors`). Empty pointer when the result has no
+#'   recorded session (non-supervised results, or models from older rtemis).
 #' - `metrics`: structured JSON for `metrics_training` /
 #'   `metrics_validation` / `metrics_test`.
 #'
@@ -1872,6 +1706,34 @@ handle_job_result <- function(conn, frame, server) {
         cols = NCOL(roc_dt),
         columns = names(roc_dt),
         format = "arrow-ipc"
+      ),
+      payload
+    ))
+  }
+  if (slice == "session") {
+    session_dt <- session_table(result)
+    if (is.null(session_dt) || NROW(session_dt) == 0L) {
+      # No observability session on this result (non-supervised result, or a
+      # model trained before session capture existed): empty pointer (no
+      # payload) so the client distinguishes "not available" from an error.
+      return(make_response(
+        req_id,
+        list(rows = 0L, cols = 0L, columns = list(), format = "arrow-ipc")
+      ))
+    }
+    payload <- encode_arrow_ipc(session_dt)
+    return(make_response_payload(
+      req_id,
+      list(
+        rows = NROW(session_dt),
+        cols = NCOL(session_dt),
+        columns = names(session_dt),
+        format = "arrow-ipc",
+        # Fixed kind -> hex fill map shared with rtemis.draw's Gantt widget,
+        # keyed in first-seen (depth-first) display order.
+        colors = as.list(rtemis::session_kind_colors(
+          unique(session_dt[["kind"]])
+        ))
       ),
       payload
     ))
@@ -1981,8 +1843,8 @@ handle_job_result <- function(conn, frame, server) {
     paste0(
       "Unsupported slice `",
       slice,
-      "`. Use `summary`, `raw`, `varimp`, `predictions`, `metrics`, ",
-      "`transformed`, `loadings`, or `assignments`."
+      "`. Use `summary`, `raw`, `varimp`, `predictions`, `roc`, `session`, ",
+      "`metrics`, `transformed`, `loadings`, or `assignments`."
     ),
     class = "rtemislive_invalid_params"
   )

@@ -143,7 +143,7 @@ test_that("roc_table emits an aggregate plus one curve per resample", {
 
   fit <- rtemis::train(
     dt,
-    algorithm = "glm",
+    hyperparameters = rtemis::setup_GLM(),
     outer_resampling_config = rtemis::setup_Resampler(
       n_resamples = 3L,
       type = "KFold",
@@ -226,7 +226,7 @@ test_that("job.result `predictions` returns Arrow IPC payload for a trained Regr
     conn,
     make_request(
       "train",
-      params = list(data_handle = handle, algorithm = "glm")
+      params = list(data_handle = handle, algorithm = "GLM")
     ),
     server
   )
@@ -297,7 +297,7 @@ test_that("job.result `metrics` returns per-split JSON for a trained Regression"
     conn,
     make_request(
       "train",
-      params = list(data_handle = handle, algorithm = "glm")
+      params = list(data_handle = handle, algorithm = "GLM")
     ),
     server
   )
@@ -374,7 +374,7 @@ test_that("job.result `varimp` returns JSON (no payload) for a trained Supervise
     conn,
     make_request(
       "train",
-      params = list(data_handle = handle, algorithm = "glm")
+      params = list(data_handle = handle, algorithm = "GLM")
     ),
     server
   )
@@ -410,4 +410,113 @@ test_that("job.result `varimp` returns JSON (no payload) for a trained Supervise
     expect_equal(ncol(back), result[["cols"]])
     expect_true(all(result[["columns"]] %in% names(back)))
   }
+})
+
+# session_table --------------------------------------------------------------
+
+test_that("session_table returns NULL on non-Supervised", {
+  expect_null(session_table(1L))
+})
+
+
+# job.result `session` end-to-end --------------------------------------------
+
+test_that("job.result `session` returns the execution timeline for a trained Regression", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  server <- make_server()
+  conn <- authed_conn(server, attach_session = "s")
+
+  set.seed(2030L)
+  dt <- data.table(
+    a = rnorm(60),
+    b = rnorm(60),
+    c = rnorm(60),
+    y = NA_real_
+  )
+  dt[, y := a + 0.5 * b + rnorm(60)]
+
+  upload <- dispatch_request(
+    conn,
+    make_request(
+      "data.upload",
+      params = list(name = "small"),
+      payload = ipc_bytes(dt)
+    ),
+    server
+  )
+  handle <- upload[["result"]][["data_handle"]]
+
+  submitted <- dispatch_request(
+    conn,
+    make_request(
+      "train",
+      params = list(data_handle = handle, algorithm = "GLM")
+    ),
+    server
+  )
+  job_id <- submitted[["result"]][["job_id"]]
+
+  s <- get_session_by_name("s")
+  job <- s[["jobs"]][[job_id]]
+  wait_for_resolved(job)
+  check_job_resolved(job)
+  expect_equal(job[["status"]], "complete")
+
+  resp <- dispatch_request(
+    conn,
+    make_request(
+      "job.result",
+      params = list(job_id = job_id, slice = "session")
+    ),
+    server
+  )
+  # Wrapped {header, payload} shape with the timeline as Arrow IPC.
+  expect_named(resp, c("header", "payload"))
+  expect_true(resp[["header"]][["ok"]])
+  result <- resp[["header"]][["result"]]
+  expect_equal(result[["format"]], "arrow-ipc")
+  expect_equal(
+    result[["columns"]],
+    c("label", "start", "end", "kind", "status", "failed", "tip")
+  )
+  expect_gt(result[["rows"]], 0L)
+
+  # The pointer carries one hex fill color per kind present in the table.
+  colors <- result[["colors"]]
+  expect_true(length(colors) > 0L)
+  expect_true(all(grepl("^#", unlist(colors))))
+
+  back <- decode_arrow_ipc(resp[["payload"]])
+  expect_equal(nrow(back), result[["rows"]])
+  expect_equal(ncol(back), result[["cols"]])
+  # Root node of every train() session is the "train" container; every kind
+  # in the table has a color in the pointer.
+  kinds <- as.character(back[["kind"]])
+  expect_true("train" %in% kinds)
+  expect_true(all(unique(kinds) %in% names(colors)))
+  # Offsets are milliseconds from session start: non-negative, end >= start.
+  expect_true(all(back[["start"]] >= 0))
+  expect_true(all(back[["end"]] >= back[["start"]]))
+})
+
+test_that("job.result `session` on a non-Supervised result -> empty pointer", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  server <- make_server()
+  conn <- authed_conn(server, attach_session = "s")
+  s <- connection_session(conn)
+  job <- submit_job(s, "test", list(), expr = quote(1L))
+  wait_for_resolved(job)
+  check_job_resolved(job)
+  resp <- dispatch_request(
+    conn,
+    make_request(
+      "job.result",
+      params = list(job_id = job[["id"]], slice = "session")
+    ),
+    server
+  )
+  expect_true(resp[["ok"]])
+  expect_equal(resp[["result"]][["rows"]], 0L)
 })

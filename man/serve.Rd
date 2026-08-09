@@ -10,7 +10,7 @@ serve(
   n_daemons = 1L,
   origins = NULL,
   token = NULL,
-  heartbeat_interval = 5,
+  heartbeat_interval = 0,
   session_ttl = 86400,
   data_ttl = 3600,
   gc_interval = 60,
@@ -41,7 +41,10 @@ on the WS upgrade. \code{NULL} uses the spec defaults
 \item{token}{Optional character scalar: Auth token clients must
 present. \code{NULL} generates a fresh 8-byte random token.}
 
-\item{heartbeat_interval}{Numeric, seconds: Heartbeat tick rate.}
+\item{heartbeat_interval}{Numeric, seconds: Per-session \code{heartbeat}
+tick rate. \code{0} (the default) disables heartbeat emission; pass a
+positive value to re-enable it. The heartbeat carries only live
+daemon/job counts, which clients fetch on demand via \code{info}.}
 
 \item{session_ttl}{Numeric, seconds: Idle-session GC TTL.}
 

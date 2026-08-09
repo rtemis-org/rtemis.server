@@ -613,9 +613,17 @@ gc_tick <- function(server) {
 maybe_tick_periodic <- function(server) {
   now <- Sys.time()
   out <- list(heartbeats_emitted = 0L, gc_ran = FALSE)
+  # `heartbeat_interval <= 0` (the default) disables emission entirely. The
+  # heartbeat carries only live daemon/job counts, which clients now fetch on
+  # demand via `info`; keep the emit path here so it can be re-enabled by
+  # passing a positive interval.
+  hb <- server[["heartbeat_interval"]]
   if (
-    difftime(now, server[["last_heartbeat"]], units = "secs") >=
-      server[["heartbeat_interval"]]
+    is.numeric(hb) &&
+      length(hb) == 1L &&
+      is.finite(hb) &&
+      hb > 0 &&
+      difftime(now, server[["last_heartbeat"]], units = "secs") >= hb
   ) {
     out[["heartbeats_emitted"]] <- emit_heartbeats(server)
   }

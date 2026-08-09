@@ -200,14 +200,14 @@ test_that("msg() routed through sink + push/pull pipeline reaches the host", {
   # Stand up a sink mimicking what init_daemon_progress installs.
   on.exit(
     {
-      rtemis::set_msg_sink(NULL)
+      rtemis.core::set_msg_sink(NULL)
       close_progress_socket(pull)
       close_progress_socket(push)
     },
     add = TRUE
   )
 
-  rtemis::set_msg_sink(function(m) {
+  rtemis.core::set_msg_sink(function(m) {
     payload <- list(
       job_id = "job-host-test",
       caller = m$caller,
