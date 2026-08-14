@@ -10,7 +10,7 @@
 # `live` is unexported from rtemis on purpose (internal mutable state),
 # so we reach it via `asNamespace("rtemis")` rather than `rtemis::live`.
 #
-# Note: lazy bindings to rtemis's other internals (e.g. `msg`,
+# Note: lazy bindings to rtemis's other internals (e.g.
 # `get_alg_name`) live in `00_init.R` as top-level `getFromNamespace`
 # calls - that file is sourced first (alphabetical) so the bindings
 # exist for the rest of the package. `live` needs `.onLoad` because

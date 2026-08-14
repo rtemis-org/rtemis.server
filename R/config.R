@@ -34,8 +34,7 @@
 #' Frame-level JSON decode uses `simplifyVector = FALSE` (heterogeneous
 #' payloads survive intact), so a JSON array like `[100, 500, 1000]` arrives as
 #' an R *list* of length-1 atomics, not a numeric vector. rtemis's `setup_*()`
-#' validators and the tuner (which branches on `length(x) > 1`) need atomic
-#' vectors.
+#' validators need atomic vectors.
 #'
 #' A JSON array decodes to an *unnamed* list and a JSON object to a *named*
 #' one, which is the discriminator: unnamed lists of length-1 atomics collapse
@@ -43,6 +42,10 @@
 #' nested config (`impute_missRanger_params`, or a whole `hyperparameters`
 #' block) keeps its list shape. Anything else is returned unchanged — notably
 #' lists of lists such as `inbag`.
+#'
+#' A search space is a tagged object (`{"candidates": [...]}`, see
+#' [rtemis::tune_over()]), so it recurses like any other and its array
+#' collapses to a vector — the tag is what marks it, never the length.
 #'
 #' @param x Value as decoded from a wire params payload.
 #'

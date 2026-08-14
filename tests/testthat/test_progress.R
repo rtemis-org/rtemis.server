@@ -151,6 +151,99 @@ test_that("route_progress() updates job progress for known job_ids", {
   expect_equal(j[["progress"]][["ts"]], "ts1")
 })
 
+test_that("route_progress() forwards every envelope field it does not rename", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  s <- new_session("a")
+  j <- make_fake_job(s)
+  captured <- list()
+
+  # A nested-progress envelope as rtemis.core emits it. `made_up` stands in for
+  # whatever rtemis reports next: the wire is producer-defined, so an unknown
+  # field must ride along rather than be dropped by a whitelist here.
+  routed <- route_progress(
+    list(list(
+      job_id = j[["id"]],
+      caller = NA,
+      message = "\033[1mTuning\033[0m 4/12",
+      ts = "ts1",
+      level = "progress",
+      session_id = "s-abc",
+      node_id = "pb2",
+      parent_id = "pb1",
+      kind = "tune",
+      label = "Tuning",
+      status = "update",
+      current = 4L,
+      total = 12L,
+      made_up = "future field"
+    )),
+    send_event = function(session, event) {
+      captured[[length(captured) + 1L]] <<- event
+    }
+  )
+
+  expect_equal(routed, 1L)
+  data <- captured[[1L]][["data"]]
+  expect_equal(data[["node_id"]], "pb2")
+  expect_equal(data[["parent_id"]], "pb1")
+  expect_equal(data[["kind"]], "tune")
+  expect_equal(data[["label"]], "Tuning")
+  expect_equal(data[["session_id"]], "s-abc")
+  expect_equal(data[["status"]], "update")
+  expect_equal(data[["current"]], 4L)
+  expect_equal(data[["total"]], 12L)
+  expect_equal(data[["made_up"]], "future field")
+  # Renamed fields: `caller` becomes `stage`, and the text is ANSI-stripped so no
+  # escape sequence reaches the browser.
+  expect_equal(data[["message"]], "Tuning 4/12")
+  expect_true(is.na(data[["stage"]]))
+  expect_false("caller" %in% names(data))
+  # The recorded snapshot keeps only what `job_summary()` reports: per-node
+  # fields would go stale the moment an event without them arrived.
+  expect_equal(j[["progress"]][["message"]], "Tuning 4/12")
+  expect_equal(j[["progress"]][["level"]], "progress")
+  expect_false(any(
+    c("node_id", "current", "total", "label", "made_up") %in%
+      names(j[["progress"]])
+  ))
+})
+
+test_that("route_progress() tracks the outermost loop's fraction", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  s <- new_session("a")
+  j <- make_fake_job(s)
+  tick <- function(node_id, parent_id, current, total) {
+    route_progress(list(list(
+      job_id = j[["id"]],
+      caller = NA,
+      message = "m",
+      level = "progress",
+      node_id = node_id,
+      parent_id = parent_id,
+      status = "update",
+      current = current,
+      total = total
+    )))
+    j[["progress"]][["fraction"]]
+  }
+
+  # The first progress node a job opens is its outermost loop.
+  expect_equal(tick("pb1", "n1", 1L, 4L), 0.25)
+  # An inner loop reports its own counters but must not move the job's figure.
+  expect_equal(tick("pb2", "pb1", 3L, 6L), 0.25)
+  expect_equal(tick("pb1", "n1", 2L, 4L), 0.5)
+  # Plain msg() envelopes carry no counters and leave it alone.
+  route_progress(list(list(
+    job_id = j[["id"]],
+    caller = "train",
+    message = "Training...",
+    level = "info"
+  )))
+  expect_equal(j[["progress"]][["fraction"]], 0.5)
+})
+
 test_that("route_progress() skips envelopes for unknown job_ids", {
   clear_sessions()
   on.exit(clear_sessions(), add = TRUE)

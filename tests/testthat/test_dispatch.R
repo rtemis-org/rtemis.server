@@ -229,19 +229,42 @@ test_that(".collapse_scalar_lists unwraps scalar lists into atomic vectors", {
 })
 
 test_that(".collapse_scalar_lists output drives rtemis tuning detection", {
-  # End-to-end shape check: collapsed multi-value spec round-trips
-  # through `.list_to_Hyperparameters` and `needs_tuning` returns TRUE.
+  # End-to-end shape check: a search space is *tagged* on the wire
+  # (`{"candidates": [...]}`), so the collapse must leave the tag intact for
+  # `.list_to_Hyperparameters()` to rebuild it and `needs_tuning` to see it.
+  needs_tuning <- getFromNamespace("needs_tuning", "rtemis")
+  raw <- jsonlite::fromJSON(
+    '{"num_trees": {"candidates": [100, 500, 1000]}}',
+    simplifyVector = FALSE
+  )
+  collapsed <- rtemis.server:::.collapse_scalar_lists(raw)
+  expect_equal(collapsed[["num_trees"]][["candidates"]], c(100L, 500L, 1000L))
+
+  hp <- rtemis::.list_to_Hyperparameters(list(
+    algorithm = "Ranger",
+    hyperparameters = collapsed
+  ))
+  expect_true(inherits(hp, "rtemis::Hyperparameters"))
+  expect_true(needs_tuning(hp))
+  expect_equal(unlist(hp@num_trees@candidates), c(100L, 500L, 1000L))
+})
+
+test_that("a bare multi-value array is a value, not a search space", {
+  # rtemis removed length-based inference: an untagged vector reaching a scalar
+  # hyperparameter is an error, which is what keeps a vector-valued
+  # hyperparameter's value distinguishable from a search over scalars.
   raw <- jsonlite::fromJSON(
     '{"num_trees": [100, 500, 1000]}',
     simplifyVector = FALSE
   )
   collapsed <- rtemis.server:::.collapse_scalar_lists(raw)
-  hp <- rtemis:::.list_to_Hyperparameters(list(
-    algorithm = "Ranger",
-    hyperparameters = collapsed
-  ))
-  expect_true(inherits(hp, "rtemis::Hyperparameters"))
-  expect_true(rtemis:::needs_tuning(hp))
+  expect_error(
+    rtemis::.list_to_Hyperparameters(list(
+      algorithm = "Ranger",
+      hyperparameters = collapsed
+    )),
+    "hyperparameter takes one"
+  )
 })
 
 

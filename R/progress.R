@@ -123,6 +123,52 @@ drain_progress_socket <- function(sock) {
 
 # %% Routing ---------------------------------------------------------------------------------------
 
+#' Completed share of a job's outermost progress loop
+#'
+#' Gives `job_summary()`'s `fraction` a producer, for clients that ask a job where it
+#' stands (`job.status`, the session snapshot a reattaching client reconciles against)
+#' rather than following the event stream.
+#'
+#' The first progress node a job opens is its outermost loop - inner loops come and go
+#' beneath it - so it is remembered on the job and only its own events move the figure.
+#' Whole steps only: composing the inner loops' share of the step in flight needs the
+#' whole open-node tree, which is a live consumer's business rather than a snapshot
+#' field's.
+#'
+#' @param job Job env.
+#' @param m List: One decoded envelope.
+#'
+#' @return Numeric in `[0, 1]`, or `NULL` when this envelope does not move it (not a
+#'   progress event, not the outermost loop, or an indeterminate loop).
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+root_fraction <- function(job, m) {
+  node_id <- m[["node_id"]]
+  if (!identical(m[["level"]], "progress") || is.null(node_id)) {
+    return(NULL)
+  }
+  if (is.null(job[["progress_root"]])) {
+    job[["progress_root"]] <- node_id
+  }
+  if (!identical(job[["progress_root"]], node_id)) {
+    return(NULL)
+  }
+  total <- m[["total"]]
+  current <- m[["current"]]
+  if (
+    is.null(total) ||
+      is.null(current) ||
+      is.na(total) ||
+      is.na(current) ||
+      total <= 0
+  ) {
+    return(NULL)
+  }
+  current / total
+}
+
 #' Find the session that owns a given job_id
 #'
 #' Walks every session in the registry and returns the first that has
@@ -194,40 +240,48 @@ route_progress <- function(messages, send_event = NULL) {
     # the recorded snapshot nor the `job.progress` event leaks escape
     # sequences into the browser.
     clean_msg <- rtemis.core::strip_ansi(m[["message"]] %||% "")
-    # Execution-graph fields are additive: present for node events emitted by rtemis's
-    # observability session, NULL for plain msg() calls. See rtemis specs/observability.md.
-    graph <- list(
-      node_id = m[["node_id"]],
-      parent_id = m[["parent_id"]],
-      kind = m[["kind"]],
-      status = m[["status"]],
-      current = m[["current"]],
-      total = m[["total"]]
+    # Everything else the envelope carries rides along as-is. rtemis's sink fields
+    # are additive by design (execution-graph ids, progress counters, labels; see
+    # rtemis specs/observability.md section 5) and which ones are present depends on
+    # what emitted the message, so enumerating them here would mean editing three
+    # packages in lockstep every time rtemis learns to report something new. Only
+    # the two renamed fields are handled by name: `caller` becomes `stage`, and the
+    # ANSI-stripped text becomes `message`.
+    payload <- c(
+      list(
+        stage = m[["caller"]],
+        message = clean_msg
+      ),
+      m[setdiff(names(m), c("job_id", "caller", "message"))]
     )
+    payload[["fraction"]] <- root_fraction(job, m)
+    # The recorded snapshot answers "where does this job stand" for a client that
+    # asks (`job.status`, the session snapshot on reattach), so it keeps the few
+    # fields `job_summary()` reports and not the whole envelope: the envelope's
+    # fields depend on what emitted the message, and merging them all would leave
+    # whichever the next event omits behind as stale state - a counter with no
+    # total, a node id belonging to a node that closed. Live subscribers get the
+    # full envelope on the event below.
+    # Absent fields are dropped rather than merged: `record_job_progress()` merges
+    # by key and assigning NULL *removes* one, so recording them would have each
+    # event erase what the last one knew - a progress event (no caller) blanking
+    # the stage, an inner-loop event blanking the fraction. Last known wins.
     record_job_progress(
       job,
-      c(
+      Filter(
+        Negate(is.null),
         list(
           stage = m[["caller"]],
           message = clean_msg,
           ts = m[["ts"]],
-          level = m[["level"]]
-        ),
-        graph
+          level = m[["level"]],
+          fraction = payload[["fraction"]]
+        )
       )
     )
     event <- make_event(
       "job.progress",
-      data = c(
-        list(
-          job_id = jid,
-          stage = m[["caller"]],
-          message = clean_msg,
-          ts = m[["ts"]],
-          level = m[["level"]]
-        ),
-        graph
-      )
+      data = c(list(job_id = jid), payload)
     )
     if (is.function(send_event)) {
       send_event(session, event)
@@ -341,20 +395,16 @@ ensure_daemon_sink <- function() {
     if (is.null(s)) {
       return(invisible(NULL))
     }
-    payload <- list(
-      job_id = live_env[["rtemislive_job_id"]],
-      caller = m$caller,
-      message = m$text,
-      ts = m$ts,
-      level = m$level,
-      # Execution-graph fields (additive; NULL for plain msg() calls). See
-      # rtemis.core::set_msg_sink() and rtemis's specs/observability.md.
-      node_id = m$node_id,
-      parent_id = m$parent_id,
-      kind = m$kind,
-      status = m$status,
-      current = m$current,
-      total = m$total
+    # The whole envelope ships. Its fields are producer-defined and additive
+    # (see `rtemis.core::set_msg_sink()`), so a whitelist here would silently
+    # drop whatever rtemis learns to report next. `text` is renamed `message`
+    # for the wire; `route_progress()` on the host renames `caller` to `stage`.
+    payload <- c(
+      list(
+        job_id = live_env[["rtemislive_job_id"]],
+        message = m[["text"]]
+      ),
+      m[setdiff(names(m), "text")]
     )
     txt <- jsonlite::toJSON(
       payload,
@@ -369,47 +419,5 @@ ensure_daemon_sink <- function() {
       block = FALSE
     )
   })
-  invisible(NULL)
-}
-
-
-# %% Progress forwarder for rtemis::train ----------------------------------------------------------
-
-#' Forward a `rtemis::train` progress checkpoint over the msg sink
-#'
-#' Thin adapter passed as `progress = ` to `rtemis::train()`. Calls
-#' rtemis's internal `msg()` with `caller = stage`, so the daemon-side
-#' sink (installed by `init_daemon_progress`) ships an envelope whose
-#' `caller` field carries the structured stage name (e.g.
-#' `"outer_fold"`). The host turns that into a `job.progress` event with
-#' `data$stage` set, which the UI can route on without text-matching
-#' the message.
-#'
-#' `msg` is unexported from rtemis; the reference is bound at package
-#' source-eval time in `00_init.R` via `getFromNamespace`, so calling
-#' `msg()` here avoids both `rtemis:::msg` (R CMD check NOTE) and any
-#' per-call namespace lookup.
-#'
-#' Designed to be referenced as `rtemis.server::forward_progress` inside
-#' the mirai job expression - mirai loads rtemis.server on the daemon
-#' on first use, sourcing `00_init.R` once, so the `msg` binding exists
-#' before the callback is ever invoked.
-#'
-#' @param stage Character scalar: Structured stage name. Becomes the
-#'   `caller` field on the wire envelope (e.g. `"outer_fold"`).
-#' @param current Integer: 1-based index of the checkpoint. Unused by
-#'   this adapter directly (encoded into `message` upstream), kept in
-#'   the signature so it matches the rtemis::train `progress` contract.
-#' @param total Integer: Total checkpoints. Same as `current` - present
-#'   to match the contract.
-#' @param message Character scalar: Human-readable line, e.g.
-#'   `"Outer fold 2/5"`. Becomes the envelope's `text` field.
-#'
-#' @return Invisible `NULL`.
-#'
-#' @author EDG
-#' @export
-forward_progress <- function(stage, current, total, message) {
-  msg(message, caller = stage)
   invisible(NULL)
 }
