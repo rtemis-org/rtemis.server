@@ -146,7 +146,13 @@ drain_progress_socket <- function(sock) {
 #' @noRd
 root_fraction <- function(job, m) {
   node_id <- m[["node_id"]]
-  if (!identical(m[["level"]], "progress") || is.null(node_id)) {
+  if (
+    !identical(m[["level"]], "progress") ||
+      is.null(node_id) ||
+      !is.character(node_id) ||
+      length(node_id) != 1L ||
+      is.na(node_id)
+  ) {
     return(NULL)
   }
   if (is.null(job[["progress_root"]])) {
