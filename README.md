@@ -1,4 +1,4 @@
-[![r-ci](https://github.com/rtemis-org/rtemis.server/actions/workflows/r-ci.yml/badge.svg)](https://github.com/rtemis-org/rtemis.server/actions/workflows/r-ci.yml)
+[![r-ci](https://github.com/rtemis-org/rtemis.server/actions/workflows/r-ci.yml/badge.svg)](https://github.com/rtemis-org/rtemis.server/actions/workflows/r-ci.yml) [![rtemis.server status badge](https://rtemis-org.r-universe.dev/rtemis.server/badges/version)](https://rtemis-org.r-universe.dev/rtemis.server)
 
 # rtemis.server
 
