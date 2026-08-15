@@ -520,3 +520,79 @@ test_that("job.result `session` on a non-Supervised result -> empty pointer", {
   expect_true(resp[["ok"]])
   expect_equal(resp[["result"]][["rows"]], 0L)
 })
+
+
+# job.result `record` end-to-end ---------------------------------------------
+
+test_that("record_json reports unavailability rather than failing", {
+  # A data job's result has no `record()` method, and a per-fold sub-model has
+  # no stored input. Neither is a failed request.
+  expect_equal(record_json(1L)[["reason"]], "unsupported")
+  expect_false(record_json(data.table(x = 1L))[["available"]])
+})
+
+test_that("job.result `record` returns the run record for a trained Regression", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  server <- make_server()
+  conn <- authed_conn(server, attach_session = "s")
+
+  set.seed(2031L)
+  dt <- data.table(a = rnorm(60), b = rnorm(60), y = NA_real_)
+  dt[, y := a + 0.5 * b + rnorm(60)]
+
+  upload <- dispatch_request(
+    conn,
+    make_request(
+      "data.upload",
+      params = list(name = "small"),
+      payload = ipc_bytes(dt)
+    ),
+    server
+  )
+  handle <- upload[["result"]][["data_handle"]]
+  submitted <- dispatch_request(
+    conn,
+    make_request(
+      "train",
+      params = list(data_handle = handle, algorithm = "GLM")
+    ),
+    server
+  )
+  job_id <- submitted[["result"]][["job_id"]]
+  s <- get_session_by_name("s")
+  job <- s[["jobs"]][[job_id]]
+  wait_for_resolved(job)
+  check_job_resolved(job)
+
+  resp <- dispatch_request(
+    conn,
+    make_request(
+      "job.result",
+      params = list(job_id = job_id, slice = "record")
+    ),
+    server
+  )
+  expect_true(resp[["ok"]])
+  rec <- resp[["result"]]
+  expect_equal(
+    rec[["$schema"]],
+    "https://schema.rtemis.org/supervised/v1/record.json"
+  )
+  # What the run did, beside what it was asked for.
+  expect_true(all(
+    c("origin", "folds", "metrics", "provenance") %in% names(rec)
+  ))
+  expect_length(rec[["folds"]], 1L)
+  expect_equal(rec[["provenance"]][["outcome"]], "completed")
+  # The data arrived over a frame, so it has no path -- and the fingerprint,
+  # not the path, is what identifies it.
+  expect_null(rec[["dat_training_path"]])
+  expect_equal(rec[["provenance"]][["data_training"]][["n_rows"]], 60L)
+
+  # A record states unset fields as explicit `null`s; dropping the keys would
+  # fail the document's own schema, which requires every one of them.
+  json <- rawToChar(encode_frame(resp)[-seq_len(4L)])
+  expect_match(json, '"dat_training_path":null', fixed = TRUE)
+  expect_match(json, '"outdir":null', fixed = TRUE)
+})

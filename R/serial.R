@@ -675,3 +675,75 @@ summary_json <- function(result) {
   }
   out
 }
+
+
+# %% record_json ------------------------------------------------------------
+
+# Result classes `rtemis::record()` has a method for. Checked up front so a
+# result without one (a data job's table) is reported unavailable rather than
+# reaching the client as an S7 dispatch failure.
+.RECORDABLE <- c(
+  "rtemis::Supervised",
+  "rtemis::SupervisedRes",
+  "rtemis::Decomposition",
+  "rtemis::Clustering"
+)
+
+# The record rides in the frame *header*, which `encode_frame()` caps at
+# `.RTEMISLIVE_HEADER_MAX`; the envelope around it (`v`, `id`, `ok`) is a few
+# dozen bytes, and the margin covers that with room to spare. Over the cap
+# `encode_frame()` aborts inside the write loop, where `serve.R` catches it into
+# a warning and sends *nothing* -- the client's request would never resolve. So
+# the size is measured here, where there is still a response to send.
+.RTEMISLIVE_RECORD_MAX <- .RTEMISLIVE_HEADER_MAX - 4096L
+
+#' Run record for the `record` slice
+#'
+#' `rtemis::record()` states what the run resolved: every config field with the
+#' origin it came from (`user` / `default` / `derived` / `tuned` / `unset`), the
+#' values each fold settled on, the tuning grid, and provenance -- versions,
+#' platform, timing, and a `DataFingerprint` per dataset. The document validates
+#' against `https://schema.rtemis.org/<family>/v1/record.json`, so it is
+#' returned bare: what the client copies or downloads is exactly what the
+#' registry validates.
+#'
+#' Absence is reported the way the tabular slices report it -- a small pointer
+#' rather than an error frame -- because neither case below is a failure of the
+#' request:
+#'
+#' - a result with no record method (a data job's table);
+#' - a model carrying no input config: only a top-level `train()` stores one, so
+#'   a per-fold sub-model or a model from an older rtemis cannot say what was
+#'   asked for, and `rtemis::record()` aborts rather than guess;
+#' - a record larger than the frame header allows.
+#'
+#' @param result A job result object.
+#'
+#' @return Named list: the record document, or
+#'   `list(available = FALSE, reason = ..., bytes = ...)`.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+record_json <- function(result) {
+  if (!inherits(result, .RECORDABLE)) {
+    return(list(available = FALSE, reason = "unsupported"))
+  }
+  rec <- tryCatch(
+    rtemis::record(result),
+    rtemis_null_input = function(e) NULL
+  )
+  if (is.null(rec)) {
+    return(list(available = FALSE, reason = "no_input_config"))
+  }
+  bytes <- length(charToRaw(as.character(jsonlite::toJSON(
+    rec,
+    auto_unbox = TRUE,
+    null = "null",
+    na = "null"
+  ))))
+  if (bytes > .RTEMISLIVE_RECORD_MAX) {
+    return(list(available = FALSE, reason = "too_large", bytes = bytes))
+  }
+  rec
+}
