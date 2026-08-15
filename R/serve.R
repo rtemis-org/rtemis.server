@@ -233,6 +233,14 @@ serve <- function(
           rtemis_version = tryCatch(
             as.character(utils::packageVersion("rtemis")),
             error = function(e) NA_character_
+          ),
+          # rtemis's node-kind palette, so the browser colors live progress and
+          # timeline bars from the one definition in R rather than a copy of its
+          # own that drifts. Announced here rather than fetched: it is static
+          # per server and the client needs it before the first job reports.
+          kind_colors = tryCatch(
+            as.list(rtemis::session_kind_colors()),
+            error = function(e) NULL
           )
         )
       )

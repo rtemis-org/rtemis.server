@@ -380,6 +380,33 @@ daemon_count <- function() {
 }
 
 
+#' Assert a rtemis catalogue table has the columns we index by name
+#'
+#' `[.data.frame` returns `character(0)` for a missing column rather than
+#' erroring, so a rtemis-side column rename would otherwise ship entries with
+#' empty fields to the client instead of failing here.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+.require_cols <- function(tbl, cols, what) {
+  missing <- setdiff(cols, colnames(tbl))
+  if (length(missing) > 0L) {
+    rtemis.core::abort(
+      paste0(
+        "rtemis `",
+        what,
+        "` is missing expected column(s): ",
+        paste0("`", missing, "`", collapse = ", "),
+        "."
+      ),
+      class = "rtemislive_internal_error"
+    )
+  }
+  invisible(tbl)
+}
+
+
 #' `algorithms` handler
 #'
 #' Returns the catalogue of supervised learning algorithms. Each entry:
@@ -396,13 +423,18 @@ handle_algorithms <- function(conn, frame, server) {
   if (!is.data.frame(tbl)) {
     return(make_response(req_id, list(algorithms = list())))
   }
+  .require_cols(
+    tbl,
+    c("name", "description", "class", "reg", "surv"),
+    "supervised_algorithms"
+  )
   algorithms <- lapply(seq_len(nrow(tbl)), function(i) {
     list(
-      name = as.character(tbl[i, "Name"]),
-      description = as.character(tbl[i, "Description"]),
-      supports_classification = isTRUE(as.logical(tbl[i, "Class"])),
-      supports_regression = isTRUE(as.logical(tbl[i, "Reg"])),
-      supports_survival = isTRUE(as.logical(tbl[i, "Surv"]))
+      name = as.character(tbl[i, "name"]),
+      description = as.character(tbl[i, "description"]),
+      supports_classification = isTRUE(as.logical(tbl[i, "class"])),
+      supports_regression = isTRUE(as.logical(tbl[i, "reg"])),
+      supports_survival = isTRUE(as.logical(tbl[i, "surv"]))
     )
   })
   make_response(req_id, list(algorithms = algorithms))
@@ -476,8 +508,10 @@ prop_enums <- function(config) {
   Filter(
     length,
     lapply(S7::S7_class(config)@properties, function(p) {
-      spec <- p[["spec"]] # NULL unless built by a `prop_*` factory
-      if (is.null(spec)) NULL else as.list(prop(spec, "enum"))
+      # NULL unless built by a `prop_*` factory; rtemis carries the spec as a
+      # plain named list, so read it with `[[` rather than an S7 accessor.
+      spec <- p[["spec"]]
+      if (is.null(spec)) NULL else as.list(spec[["enum"]])
     })
   )
 }
@@ -633,9 +667,10 @@ handle_algorithm_describe <- function(conn, frame, server) {
   )
   description <- NA_character_
   if (is.data.frame(alg_row)) {
-    hit <- which(alg_row[["Name"]] == alg_name)[1L]
+    .require_cols(alg_row, c("name", "description"), "supervised_algorithms")
+    hit <- which(alg_row[["name"]] == alg_name)[1L]
     if (!is.na(hit)) {
-      description <- as.character(alg_row[hit, "Description"])
+      description <- as.character(alg_row[hit, "description"])
     }
   }
 
@@ -1309,21 +1344,17 @@ handle_train <- function(conn, frame, server) {
     }
   )
 
-  # `progress` callback: `forward_progress` calls rtemis's internal
-  # `msg()` with `caller = stage`, so the daemon-side msg sink (set up
-  # by `init_daemon_progress`) ships an envelope with the structured
-  # stage name. The wire arrives at the client as
-  # `{stage: "outer_fold", message: "Outer fold 2/5", ...}`. Referencing
-  # `rtemis.server::forward_progress` in the quoted expression makes
-  # mirai load rtemis.server on the daemon, which runs `.onLoad` once
-  # and caches the `msg` lookup - no per-call namespace work.
+  # No progress plumbing here: `train()` reports its nested progress through the
+  # rtemis.core msg sink, which `ensure_daemon_sink()` has already installed on this
+  # daemon. Each `progress_begin`/`update`/`end` ships an envelope carrying node ids,
+  # counters and label, and `route_progress()` turns those into nested
+  # `job.progress` events. (Until rtemis 1.3.5 a `progress = ` callback duplicated a
+  # single fold counter on the side; the sink reports every level of the run.)
   job <- submit_job(
     session = s,
     type = "train",
     params = params,
-    expr = quote(
-      rtemis::train(cfg, progress = rtemis.server::forward_progress)
-    ),
+    expr = quote(rtemis::train(cfg)),
     env = list(cfg = cfg),
     max_concurrent = server[["max_concurrent"]] %||% 8L
   )
