@@ -1,11 +1,11 @@
 Package: rtemis.server
-Version: 0.1.1
+Version: 0.2.0
 Title: 'rtemis' Server
-Date: 2026-08-15
+Date: 2026-08-18
 Authors@R: person(given = "E.D.", family = "Gennatas", role = c("aut", "cre", "cph"), 
     email = "gennatas@gmail.com", comment = c(ORCID = "0000-0001-9280-3609"))
 Description: Create a websocket server to run 'rtemis' functions from an 'rtemislive' client.
-License: GPL (>= 3)
+License: BSD_3_clause + file LICENSE
 URL: https://www.rtemis.org, https://live.rtemis.org
 BugReports: https://github.com/rtemis-org/rtemis.server/issues
 ByteCompile: yes
