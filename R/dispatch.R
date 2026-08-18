@@ -1622,6 +1622,15 @@ handle_job_cancel <- function(conn, frame, server) {
 #'   `res_metrics`) stripped. Use the dedicated slices below for those.
 #' - `raw`: full `to_json(result)` JSON, no stripping (debug / escape
 #'   hatch - may be very large for resampled fits or wide varimp).
+#' - `record`: the rtemis run record (`rtemis::record()`) as JSON, validating
+#'   against `https://schema.rtemis.org/<family>/v1/record.json`: every config
+#'   field with the origin it came from, the values each fold resolved, the
+#'   tuning grid, and provenance (versions, platform, timing, data
+#'   fingerprints). Where `summary` says what the result *is*, this says what
+#'   the run *did*. Returned bare so the client can copy, download and validate
+#'   the document as-is; when there is no record to give, a small
+#'   `{available: false, reason}` pointer instead (`reason` is `unsupported`,
+#'   `no_input_config`, or `too_large`).
 #' - `varimp`: small JSON pointer (`{rows, cols, columns}`) + Arrow IPC
 #'   payload of the variable-importance table.
 #' - `predictions`: small JSON pointer + Arrow IPC of the long-format
@@ -1682,6 +1691,9 @@ handle_job_result <- function(conn, frame, server) {
   }
   if (slice == "raw") {
     return(make_response(req_id, to_json(result)))
+  }
+  if (slice == "record") {
+    return(make_response(req_id, record_json(result)))
   }
   if (slice == "varimp") {
     vi_dt <- varimp_table(result)
@@ -1874,8 +1886,8 @@ handle_job_result <- function(conn, frame, server) {
     paste0(
       "Unsupported slice `",
       slice,
-      "`. Use `summary`, `raw`, `varimp`, `predictions`, `roc`, `session`, ",
-      "`metrics`, `transformed`, `loadings`, or `assignments`."
+      "`. Use `summary`, `raw`, `record`, `varimp`, `predictions`, `roc`, ",
+      "`session`, `metrics`, `transformed`, `loadings`, or `assignments`."
     ),
     class = "rtemislive_invalid_params"
   )
