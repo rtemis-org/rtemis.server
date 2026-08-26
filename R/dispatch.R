@@ -948,6 +948,94 @@ handle_preprocessor_describe <- function(conn, frame, server) {
 }
 
 
+#' `config.validate` handler
+#'
+#' Validates one config -- against the published schema, and against a dataset
+#' when `data_handle` names one -- and returns what is wrong with it.
+#'
+#' Synchronous, unlike `train` / `decomp` / `cluster`. Validation is a
+#' millisecond of work on data already in this session, so routing it through
+#' the job store would buy nothing and cost the client a second round trip
+#' before it could show the user why their plan will not run.
+#'
+#' The whole check is `rtemis::validate_config()`. This handler translates the
+#' wire and nothing else, which is two things: the frame decodes with
+#' `simplifyVector = FALSE`, so JSON arrays arrive as lists of length-1 atomics
+#' (`.collapse_scalar_lists()`); and `schema_id` travels beside the config
+#' rather than inside it, so it is spliced back in as the `$schema` the config
+#' document declares. `.from_wire()` is deliberately not used: it translates the
+#' *flat* `train` params, and this method receives a schema-shaped document.
+#'
+#' Wire params:
+#'
+#' - `schema_id` - the config's schema URL, e.g.
+#'   `https://schema.rtemis.org/supervised/v1/schema.json`
+#' - `config` - the config document, as a JSON object
+#' - `data_handle` - optional; id of an uploaded dataset on this session.
+#'   Omitted, only the schema is checked.
+#' - `outcome` - optional; name of the outcome column. Omitted, rtemis's
+#'   convention applies and the last column is the outcome.
+#' - `step` - optional; this config's position in the plan, recorded on every
+#'   finding so a client can attribute it without tracking the request.
+#'
+#' Wire response: `{ diagnostics: [{ code, severity, step, message, plain,
+#' evidence, fix }, ...] }`, empty when the config is clean. A finding is a
+#' report rather than a failure, so a config with errors still answers `ok`.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+handle_config_validate <- function(conn, frame, server) {
+  req_id <- frame[["header"]][["id"]] %||% NA_character_
+  params <- frame[["header"]][["params"]] %||% list()
+
+  schema_id <- params[["schema_id"]]
+  config <- params[["config"]]
+  if (is.null(schema_id) || is.null(config)) {
+    rtemis.core::abort(
+      "`schema_id` and `config` are required.",
+      class = "rtemislive_invalid_params"
+    )
+  }
+  if (!is.list(config)) {
+    rtemis.core::abort(
+      "`config` must be a JSON object.",
+      class = "rtemislive_invalid_params"
+    )
+  }
+
+  data_dt <- NULL
+  if (!is.null(params[["data_handle"]])) {
+    data_dt <- get_data(connection_session(conn), params[["data_handle"]])
+  }
+
+  document <- .collapse_scalar_lists(config)
+  document[["$schema"]] <- schema_id
+
+  # An empty `outcome` is a client's "no selection" -- a select with nothing
+  # chosen -- and means unset, as an empty `positive_class` does in
+  # `.from_wire()`. Left as `""` it would be reported as a column that is not
+  # in the data, which is true but useless.
+  outcome <- params[["outcome"]]
+  if (is.character(outcome) && length(outcome) == 1L && !nzchar(outcome)) {
+    outcome <- NULL
+  }
+
+  diagnostics <- rtemis::validate_config(
+    config = document,
+    data = data_dt,
+    outcome = outcome,
+    step = params[["step"]]
+  )
+  # `to_json()` walks the published properties of each finding, so the wire
+  # shape follows `diagnostic/v1/schema.json` without being restated here.
+  make_response(
+    req_id,
+    list(diagnostics = rtemis::to_json(diagnostics)[["diagnostics"]])
+  )
+}
+
+
 # %% Session-level handlers --------------------------------------------------
 
 #' `session.list` handler
@@ -2139,6 +2227,12 @@ handle_choose_dir <- function(conn, frame, server) {
   "preprocessor.describe" = list(
     handler = handle_preprocessor_describe,
     requires = "authed"
+  ),
+  # Attached, not merely authed: a `data_handle` is session-scoped, so the
+  # data half of validation has nowhere to resolve one without a session.
+  "config.validate" = list(
+    handler = handle_config_validate,
+    requires = c("authed", "attached")
   ),
   "session.list" = list(
     handler = handle_session_list,
