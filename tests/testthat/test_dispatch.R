@@ -353,7 +353,7 @@ test_that("resampler.describe returns the setup_Resampler schema with choices", 
 })
 
 
-test_that("preprocessor.describe returns the setup_Preprocessor schema", {
+test_that("preprocessor.describe returns the setup_SupervisedPreprocessor schema", {
   server <- make_server()
   conn <- authed_conn(server)
   resp <- dispatch_request(
@@ -370,9 +370,21 @@ test_that("preprocessor.describe returns the setup_Preprocessor schema", {
   expect_true("choices" %in% names(by_name[["impute_type"]]))
   expect_true("missRanger" %in% by_name[["impute_type"]][["choices"]])
   expect_equal(by_name[["impute_type"]][["default"]], "missRanger")
-  # complete_cases is a logical flag, default FALSE
-  expect_equal(by_name[["complete_cases"]][["type"]], "logical")
-  expect_false(by_name[["complete_cases"]][["default"]])
+  # The four operations a fitted preprocessor cannot perform are absent, not
+  # merely defaulted off: `train()` takes a `SupervisedPreprocessorConfig`,
+  # which has no property for them, so offering one here would describe a
+  # setting whose submission is rejected.
+  for (dropped in c(
+    "complete_cases",
+    "remove_duplicates",
+    "remove_cases_thres",
+    "remove_features_thres"
+  )) {
+    expect_false(dropped %in% names(by_name), info = dropped)
+  }
+  # `remove_constants` stays: a zero-variance column is a requirement of
+  # fitting rather than a cleaning decision.
+  expect_equal(by_name[["remove_constants"]][["type"]], "logical")
   # `center = scale` resolves to scale's own default rather than the
   # `scale` function — a concrete FALSE logical.
   expect_equal(by_name[["center"]][["type"]], "logical")

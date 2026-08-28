@@ -241,6 +241,18 @@ dispatch_request <- function(conn, frame, server) {
     rtemislive_invalid_params = function(e) {
       make_error(req_id, "invalid_params", conditionMessage(e))
     },
+    # The only arm carrying structured data. A refused run has findings to
+    # report -- each with a code, plain-language text, evidence and where one
+    # exists a patch that fixes it -- and a caller made to parse them back out
+    # of a sentence cannot act on them.
+    rtemislive_invalid_config = function(e) {
+      make_error(
+        req_id,
+        "invalid_config",
+        conditionMessage(e),
+        details = list(diagnostics = e[["diagnostics"]])
+      )
+    },
     rtemislive_not_found = function(e) {
       make_error(req_id, "not_found", conditionMessage(e))
     },
@@ -925,11 +937,18 @@ handle_resampler_describe <- function(conn, frame, server) {
 
 #' `preprocessor.describe` handler
 #'
-#' Returns the schema for `setup_Preprocessor()` so the client can render
-#' a preprocessing configuration form. Same shape and machinery as
+#' Returns the schema for `setup_SupervisedPreprocessor()` so the client can
+#' render a preprocessing configuration form. Same shape and machinery as
 #' `resampler.describe`. `impute_missRanger_params` is a nested list with
 #' no scalar control, so it is omitted here and left to the server-side
 #' default; the matching `train` handler still accepts it.
+#'
+#' The supervised type, not `setup_Preprocessor()`. A preprocessor `train()`
+#' fits is replayed at predict time, so it cannot drop rows, and it cannot
+#' learn which columns to drop from a fold's own training subset -- four
+#' operations `SuperConfigLive` has no property for. Describing the wider type
+#' here would offer a client four settings whose submission `build_super_config()`
+#' rejects, and leave every consumer to re-derive which four.
 #'
 #' Wire response: `{ parameters: [{ name, type, default, tunable,
 #' choices? }, ...] }`.
@@ -942,7 +961,10 @@ handle_preprocessor_describe <- function(conn, frame, server) {
   skip <- "impute_missRanger_params"
   parameters <- Filter(
     function(p) !(p[["name"]] %in% skip),
-    .live_build_schema(setup_Preprocessor, config = setup_Preprocessor())
+    .live_build_schema(
+      setup_SupervisedPreprocessor,
+      config = setup_SupervisedPreprocessor()
+    )
   )
   make_response(req_id, list(parameters = parameters))
 }
@@ -1398,6 +1420,18 @@ handle_data_delete <- function(conn, frame, server) {
 #' - `positive_class` - character; binary-classification positive class
 #' - `question` - character; user-provided label for the run
 #'
+#' The config is checked against the data before a job is created, and a run
+#' that cannot answer the question asked is refused rather than queued: an
+#' `invalid_config` error carrying the findings in `details`, in the shape
+#' `config.validate` returns them. A caller repairing a plan then never spends
+#' a job slot to learn what is wrong with it.
+#'
+#' Findings that do not stop the run travel with the accepted job as
+#' `diagnostics`, so a warning reaches the submitter instead of only the daemon
+#' log. `train()` checks a `SuperConfigLive` again on the other side -- that is
+#' the type's own guarantee rather than this handler's, and is what makes "no
+#' run reaches R unchecked" true of every submitter and not just this one.
+#'
 #' @author EDG
 #' @keywords internal
 #' @noRd
@@ -1432,6 +1466,21 @@ handle_train <- function(conn, frame, server) {
     }
   )
 
+  # The gate. `validate_config()` reads a profile of the data rather than the
+  # rows, so this costs a fraction of a second at any size a browser uploaded,
+  # and it is the same call `train()` makes on the other side -- the answer here
+  # and the daemon's cannot differ.
+  diagnostics <- rtemis::validate_config(cfg, data = data_dt)
+  findings <- rtemis::to_json(diagnostics)[["diagnostics"]]
+  blocking <- Filter(function(d) identical(d[["severity"]], "error"), findings)
+  if (length(blocking) > 0L) {
+    rtemis.core::abort(
+      "Configuration cannot run on this data.",
+      class = "rtemislive_invalid_config",
+      data = list(diagnostics = findings)
+    )
+  }
+
   # No progress plumbing here: `train()` reports its nested progress through the
   # rtemis.core msg sink, which `ensure_daemon_sink()` has already installed on this
   # daemon. Each `progress_begin`/`update`/`end` ships an envelope carrying node ids,
@@ -1451,6 +1500,9 @@ handle_train <- function(conn, frame, server) {
   if (identical(job[["status"]], "queued")) {
     resp[["queue_position"]] <- job_queue_position(job)
   }
+  # Always present, empty when the config is clean: a caller reading
+  # `length()` should not have to tell an absent field from an empty one.
+  resp[["diagnostics"]] <- findings
   make_response(req_id, resp)
 }
 

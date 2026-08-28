@@ -17,8 +17,8 @@ importFrom(jsonlite,
 )
 importFrom(rtemis,
   setup_ExecutionConfig,
-  setup_Preprocessor,
   setup_Resampler,
   setup_SuperConfigLive,
+  setup_SupervisedPreprocessor,
   to_json
 )

@@ -151,7 +151,10 @@ test_that("build_super_config accepts a canonical schema.rtemis.org config", {
   )
   expect_true(inherits(prop(cfg, "hyperparameters"), "rtemis::Hyperparameters"))
   expect_true(
-    inherits(prop(cfg, "preprocessor_config"), "rtemis::PreprocessorConfig")
+    inherits(
+      prop(cfg, "preprocessor_config"),
+      "rtemis::SupervisedPreprocessorConfig"
+    )
   )
 })
 
