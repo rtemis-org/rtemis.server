@@ -382,7 +382,7 @@ test_that("train + job.list + job.status + job.result happy path (GLM regression
     server
   )
   expect_true(result[["ok"]])
-  expect_equal(result[["result"]][[".class"]], "Regression")
+  expect_equal(result[["result"]][["type"]], "Regression")
   expect_equal(result[["result"]][["algorithm"]], "GLM")
 })
 

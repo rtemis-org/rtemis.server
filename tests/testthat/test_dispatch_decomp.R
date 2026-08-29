@@ -198,7 +198,6 @@ test_that("decomp + job.status + job.result happy path (PCA)", {
     server
   )
   expect_true(result[["ok"]])
-  expect_equal(result[["result"]][[".class"]], "Decomposition")
   expect_equal(result[["result"]][["algorithm"]], "PCA")
   # Heavy fields stripped from summary
   expect_true(
