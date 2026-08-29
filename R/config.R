@@ -168,13 +168,19 @@ build_super_config <- function(params, dat_training) {
   # Drop the path trio in favour of the data itself, and drop `outdir` so the
   # live default (NULL) applies: a portable recipe defaults it to "results/",
   # but a live run writes nothing to disk and hands its result back over the
-  # wire. Every remaining property is a `setup_SuperConfigLive()` formal, so a
+  # wire. `character2factor` goes with the paths for the same reason -- it says
+  # how a *file* is read, and this config holds a frame that has already been
+  # read. The equivalent decision was made on arrival, where `read_ipc_bytes()`
+  # coerces every character column to a factor.
+  #
+  # Every remaining property is a `setup_SuperConfigLive()` formal, so a
   # property added to `SuperConfig` without a live counterpart fails loudly
   # here rather than being silently dropped.
   args[c(
     "dat_training_path",
     "dat_validation_path",
     "dat_test_path",
+    "character2factor",
     "outdir"
   )] <- NULL
   args[["dat_training"]] <- dat_training
