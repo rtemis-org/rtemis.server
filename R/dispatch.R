@@ -1408,12 +1408,18 @@ handle_data_delete <- function(conn, frame, server) {
 #'
 #' Wire params mirror `SuperConfig`'s properties one for one, so the block
 #' shapes are documented by the schemas at schema.rtemis.org rather than
-#' restated here. All optional except `data_handle` and `algorithm`:
+#' restated here. All optional except `data_handle` and the learner:
 #'
 #' - `data_handle` - id of a previously-uploaded dataset on this session
-#' - `algorithm` - character, see `algorithms` method
-#' - `hyperparameters` - flat `name -> value` map, or the nested
-#'   `{ algorithm, hyperparameters }` shape
+#' - `algorithm` - character, see `algorithms` method. Omitted only when
+#'   `hyperparameters` is a variants set, which names the algorithm inside each
+#'   variant; exactly one of the two says what to fit.
+#' - `hyperparameters` - flat `name -> value` map, the nested
+#'   `{ algorithm, hyperparameters }` shape, or the variants set
+#'   `{ variants: { <name>: { algorithm, hyperparameters } } }` -- the third is
+#'   `supervised/v1`'s second form for the block, and reaches
+#'   `.list_to_HyperparametersSet()` untouched because `.nest_hyperparameters()`
+#'   only folds when a top-level `algorithm` is present.
 #' - `preprocessor_config`, `decomposition_config`, `tuner_config`,
 #'   `outer_resampling_config`, `execution_config` - JSON objects
 #' - `weights` - character; column name in the dataset used as weights
@@ -1441,9 +1447,17 @@ handle_train <- function(conn, frame, server) {
 
   data_handle <- params[["data_handle"]]
   algorithm <- params[["algorithm"]]
-  if (is.null(data_handle) || is.null(algorithm)) {
+  # A variants set carries the algorithm inside each variant, so it stands in
+  # for the top-level `algorithm` rather than accompanying it. Requiring both
+  # is what made a valid `supervised/v1` config unrunnable: a submitter with a
+  # set had nothing to put here, and sending an empty string got it as far as
+  # building the learner before failing on a name nobody wrote.
+  has_learner <- !is.null(algorithm) ||
+    rtemis::is_wire_hyperparameters_set(params[["hyperparameters"]])
+  if (is.null(data_handle) || !has_learner) {
     rtemis.core::abort(
-      "`data_handle` and `algorithm` are required.",
+      "`data_handle` and a learner (`algorithm`, or a `hyperparameters` ",
+      "variants set) are required.",
       class = "rtemislive_invalid_params"
     )
   }
