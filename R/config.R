@@ -149,9 +149,9 @@
 #' then binds the in-memory data. `.list_to_SuperConfig()` produces the
 #' portable, path-based recipe; rtemislive's data arrives over a frame rather
 #' than from disk, so the run needs the `SuperConfigLive` variant. The two
-#' classes carry identical properties apart from `dat_*_path` / `dat_*`, so the
-#' properties are copied across generically — re-listing every block here is
-#' what would drift as `SuperConfig` grows.
+#' classes carry identical properties apart from `.PORTABLE_ONLY_PROPERTIES`,
+#' so the properties are copied across generically — re-listing every block
+#' here is what would drift as `SuperConfig` grows.
 #'
 #' @param params Named list of `train` wire params.
 #' @param dat_training `data.table`: Training data resolved from `data_handle`.
@@ -161,28 +161,32 @@
 #' @author EDG
 #' @keywords internal
 #' @noRd
+# `SuperConfig` properties a `SuperConfigLive` does not model, dropped before
+# the live config is built. The path trio is replaced by the data itself;
+# `character2factor` says how a *file* is read, and this config holds a frame
+# that has already been read -- the equivalent decision was made on arrival,
+# where `read_ipc_bytes()` coerces every character column to a factor; `outdir`
+# falls back to the live default (NULL), since a live run writes nothing to disk
+# and hands its result back over the wire.
+#
+# Every other property must be a `setup_SuperConfigLive()` formal, which
+# `test_config.R` pins: the two lists are compared there, so a property added to
+# `SuperConfig` without a live counterpart fails a test run rather than a user's
+# `train` frame.
+.PORTABLE_ONLY_PROPERTIES <- c(
+  "dat_training_path",
+  "dat_validation_path",
+  "dat_test_path",
+  "character2factor",
+  "outdir"
+)
+
+
 build_super_config <- function(params, dat_training) {
   args <- S7::props(.list_to_SuperConfig(.nest_hyperparameters(.from_wire(
     params
   ))))
-  # Drop the path trio in favour of the data itself, and drop `outdir` so the
-  # live default (NULL) applies: a portable recipe defaults it to "results/",
-  # but a live run writes nothing to disk and hands its result back over the
-  # wire. `character2factor` goes with the paths for the same reason -- it says
-  # how a *file* is read, and this config holds a frame that has already been
-  # read. The equivalent decision was made on arrival, where `read_ipc_bytes()`
-  # coerces every character column to a factor.
-  #
-  # Every remaining property is a `setup_SuperConfigLive()` formal, so a
-  # property added to `SuperConfig` without a live counterpart fails loudly
-  # here rather than being silently dropped.
-  args[c(
-    "dat_training_path",
-    "dat_validation_path",
-    "dat_test_path",
-    "character2factor",
-    "outdir"
-  )] <- NULL
+  args[.PORTABLE_ONLY_PROPERTIES] <- NULL
   args[["dat_training"]] <- dat_training
   do.call(rtemis::setup_SuperConfigLive, args)
 }

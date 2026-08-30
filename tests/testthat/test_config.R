@@ -159,6 +159,21 @@ test_that("build_super_config accepts a canonical schema.rtemis.org config", {
 })
 
 
+test_that("every SuperConfig property reaches setup_SuperConfigLive", {
+  # `build_super_config()` copies properties across generically, so a property
+  # added to `SuperConfig` with no live counterpart is otherwise caught only
+  # when a `train` frame arrives -- `do.call()` raises "unused argument" at the
+  # user, not here. Compare the two lists directly.
+  portable <- S7::prop_names(rtemis::setup_SuperConfig())
+  live <- names(formals(rtemis::setup_SuperConfigLive))
+  drops <- rtemis.server:::.PORTABLE_ONLY_PROPERTIES
+  expect_equal(setdiff(setdiff(portable, drops), live), character(0))
+  # The drop list names only real properties, so a rename cannot leave a stale
+  # entry silently dropping nothing.
+  expect_equal(setdiff(drops, portable), character(0))
+})
+
+
 test_that("build_super_config rejects an unmodelled key", {
   dt <- data.table(a = rnorm(10), y = rnorm(10))
   expect_error(
