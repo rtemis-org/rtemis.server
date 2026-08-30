@@ -159,6 +159,60 @@ test_that("build_super_config accepts a canonical schema.rtemis.org config", {
 })
 
 
+test_that("build_super_config accepts a variants set as the learner", {
+  # `supervised/v1`'s second shape for `hyperparameters`: a union of named
+  # configurations of one algorithm, which names the algorithm inside each
+  # variant rather than at the top level. An agent building a plan reaches for
+  # it, and it used to be unrunnable -- the submitter had no top-level
+  # `algorithm` to send, and an empty string got as far as building the learner
+  # before failing on a name nobody wrote.
+  #
+  # `.nest_hyperparameters()` must leave the block alone here: folding an
+  # `algorithm` in is what would bury the variants.
+  dt <- data.table(a = rnorm(20), b = rnorm(20), y = rnorm(20))
+  cfg <- build_cfg(
+    list(
+      `$schema` = "https://schema.rtemis.org/supervised/v1/schema.json",
+      data_handle = "d1",
+      hyperparameters = list(
+        variants = list(
+          default = list(
+            algorithm = "Ranger",
+            hyperparameters = list(num_trees = 500L)
+          )
+        )
+      ),
+      outer_resampling_config = list(type = "KFold", n_resamples = 3L)
+    ),
+    dt
+  )
+  hp <- prop(cfg, "hyperparameters")
+  expect_true(inherits(hp, "rtemis::HyperparametersSet"))
+  # The variant's name survives: it is what a tuner reports as the winner.
+  expect_equal(names(prop(hp, "members")), "default")
+  expect_equal(prop(hp, "algorithm"), "Ranger")
+})
+
+
+test_that("a train frame needs a learner, in either shape", {
+  # The handler's guard. A variants set stands in for the top-level
+  # `algorithm`; a bare flat map is neither and is refused before a job slot is
+  # spent on it.
+  learner <- function(params) {
+    !is.null(params[["algorithm"]]) ||
+      rtemis::is_wire_hyperparameters_set(params[["hyperparameters"]])
+  }
+  expect_true(learner(list(algorithm = "Ranger")))
+  expect_true(learner(list(
+    hyperparameters = list(
+      variants = list(a = list(algorithm = "Ranger", hyperparameters = list()))
+    )
+  )))
+  expect_false(learner(list(hyperparameters = list(num_trees = 500L))))
+  expect_false(learner(list()))
+})
+
+
 test_that("every SuperConfig property reaches setup_SuperConfigLive", {
   # `build_super_config()` copies properties across generically, so a property
   # added to `SuperConfig` with no live counterpart is otherwise caught only
