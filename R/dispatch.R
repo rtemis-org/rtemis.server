@@ -1408,12 +1408,13 @@ handle_data_delete <- function(conn, frame, server) {
 #'
 #' Wire params mirror `SuperConfig`'s properties one for one, so the block
 #' shapes are documented by the schemas at schema.rtemis.org rather than
-#' restated here. All optional except `data_handle` and the learner:
+#' restated here. All optional except `data_handle`:
 #'
 #' - `data_handle` - id of a previously-uploaded dataset on this session
-#' - `algorithm` - character, see `algorithms` method. Omitted only when
+#' - `algorithm` - character, see `algorithms` method. Omit it when
 #'   `hyperparameters` is a variants set, which names the algorithm inside each
-#'   variant; exactly one of the two says what to fit.
+#'   variant, or when no learner is being named at all and rtemis's default
+#'   should apply.
 #' - `hyperparameters` - flat `name -> value` map, the nested
 #'   `{ algorithm, hyperparameters }` shape, or the variants set
 #'   `{ variants: { <name>: { algorithm, hyperparameters } } }` -- the third is
@@ -1446,18 +1447,22 @@ handle_train <- function(conn, frame, server) {
   params <- frame[["header"]][["params"]] %||% list()
 
   data_handle <- params[["data_handle"]]
-  algorithm <- params[["algorithm"]]
-  # A variants set carries the algorithm inside each variant, so it stands in
-  # for the top-level `algorithm` rather than accompanying it. Requiring both
-  # is what made a valid `supervised/v1` config unrunnable: a submitter with a
-  # set had nothing to put here, and sending an empty string got it as far as
-  # building the learner before failing on a name nobody wrote.
-  has_learner <- !is.null(algorithm) ||
-    rtemis::is_wire_hyperparameters_set(params[["hyperparameters"]])
-  if (is.null(data_handle) || !has_learner) {
+  # Only the data is required. A config names its learner in one of three ways
+  # and all three are valid: a top-level `algorithm` with a flat map, a
+  # `hyperparameters` variants set that names the algorithm inside each member,
+  # or nothing at all -- `hyperparameters` is nullable in `supervised/v1` and
+  # `train()` has its own default, so "unset" means "rtemis chooses" exactly as
+  # it does for every other block.
+  #
+  # This handler used to require `algorithm`, which made two of the three
+  # unsubmittable: a caller holding a schema-valid config had nothing to put
+  # here, and one that sent an empty string to get past the check was refused
+  # much later by a message naming a learner nobody had written. Nothing is
+  # lost by dropping the check -- a misspelled key is caught by
+  # `.list_to_SuperConfig()`, which rejects anything it does not model.
+  if (is.null(data_handle)) {
     rtemis.core::abort(
-      "`data_handle` and a learner (`algorithm`, or a `hyperparameters` ",
-      "variants set) are required.",
+      "`data_handle` is required.",
       class = "rtemislive_invalid_params"
     )
   }

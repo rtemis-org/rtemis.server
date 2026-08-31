@@ -194,22 +194,34 @@ test_that("build_super_config accepts a variants set as the learner", {
 })
 
 
-test_that("a train frame needs a learner, in either shape", {
-  # The handler's guard. A variants set stands in for the top-level
-  # `algorithm`; a bare flat map is neither and is refused before a job slot is
-  # spent on it.
-  learner <- function(params) {
-    !is.null(params[["algorithm"]]) ||
-      rtemis::is_wire_hyperparameters_set(params[["hyperparameters"]])
-  }
-  expect_true(learner(list(algorithm = "Ranger")))
-  expect_true(learner(list(
-    hyperparameters = list(
-      variants = list(a = list(algorithm = "Ranger", hyperparameters = list()))
-    )
-  )))
-  expect_false(learner(list(hyperparameters = list(num_trees = 500L))))
-  expect_false(learner(list()))
+test_that("build_super_config accepts a config that names no learner", {
+  # The third valid form: `hyperparameters` is nullable in `supervised/v1` and
+  # `train()` has its own default, so a config naming no algorithm means
+  # "rtemis chooses" rather than "the caller forgot". The handler used to
+  # require one, which made this unsubmittable even though `train()` has always
+  # run it.
+  dt <- data.table(a = rnorm(20), b = rnorm(20), y = rnorm(20))
+  cfg <- build_cfg(
+    list(
+      data_handle = "d1",
+      outer_resampling_config = list(type = "KFold", n_resamples = 3L)
+    ),
+    dt
+  )
+  expect_true(inherits(cfg, "rtemis::SuperConfigLive"))
+  expect_null(prop(cfg, "hyperparameters"))
+})
+
+
+test_that("a train frame needs only its data", {
+  # The handler's guard is `data_handle` alone. All three ways of naming a
+  # learner -- a top-level `algorithm`, a variants set, or nothing at all --
+  # reach rtemis, which is the layer that knows what each means. A misspelled
+  # key is caught downstream by the reconstructor, not here.
+  required <- function(params) !is.null(params[["data_handle"]])
+  expect_true(required(list(data_handle = "d1", algorithm = "Ranger")))
+  expect_true(required(list(data_handle = "d1")))
+  expect_false(required(list(algorithm = "Ranger")))
 })
 
 
