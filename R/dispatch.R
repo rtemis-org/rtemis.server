@@ -2061,15 +2061,14 @@ handle_job_delete <- function(conn, frame, server) {
 #' look at `job[["result"]]` and `job[["status"]]` -- nothing checks how the
 #' job env was built, which is what makes this a registration step rather
 #' than a parallel implementation of the slicing logic those already have.
+#' See `load_model_job()` for the read, validate, and register.
 #'
-#' The payload is a raw `.rds` file, written to a temp path and read back
-#' with [readRDS()] rather than `unserialize()`d directly from memory --
-#' `readRDS()` is what a client that saved the file with `saveRDS()` (the
-#' ordinary R workflow, `outdir` or otherwise) actually wrote, compression
-#' included. Rejected outright if the object is not a `Supervised` result:
-#' every downstream slice (`summary_json`, `varimp_table`, `predictions_table`,
-#' ...) assumes that shape, and failing here with one clear message beats
-#' failing later inside whichever slice a client happens to ask for first.
+#' Single-shot: the whole `.rds` in one frame. Large enough to exceed a
+#' WebSocket frame -- confirmed in practice, not just in principle -- and the
+#' connection closes with code 1009 before this handler ever runs; a client
+#' that cannot bound a model's size in advance should use `job.load.begin` /
+#' `.chunk` / `.end` instead, mirroring `data.upload`'s own two paths for the
+#' same reason.
 #'
 #' @author EDG
 #' @keywords internal
@@ -2083,64 +2082,131 @@ handle_job_load <- function(conn, frame, server) {
       class = "rtemislive_invalid_params"
     )
   }
+  s <- connection_session(conn)
+  job <- load_model_job(s, payload)
+  make_response(req_id, job_summary(job))
+}
 
-  tmp <- tempfile(fileext = ".rds")
-  on.exit(unlink(tmp), add = TRUE)
-  writeBin(payload, tmp)
 
-  result <- tryCatch(
-    readRDS(tmp),
-    error = function(e) {
-      rtemis.core::abort(
-        "Could not read the uploaded file as an .rds object: ",
-        conditionMessage(e),
-        class = "rtemislive_invalid_params"
-      )
-    }
-  )
-
-  if (!inherits(result, "rtemis::Supervised")) {
+#' `job.load.begin` handler
+#'
+#' The chunked counterpart of `job.load`, for a model whose serialized size
+#' exceeds a single WebSocket frame -- confirmed to bite in practice: an
+#' actual fitted `Supervised` object (as opposed to the small fixtures this
+#' package's own tests train) closed the connection with code 1009 ("message
+#' too large") on the single-shot path. Reuses `begin_upload` unchanged --
+#' chunk bookkeeping does not care what the bytes decode to.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+handle_job_load_begin <- function(conn, frame, server) {
+  req_id <- frame[["header"]][["id"]] %||% NA_character_
+  params <- frame[["header"]][["params"]] %||% list()
+  if (
+    is.null(params[["name"]]) ||
+      is.null(params[["total_bytes"]]) ||
+      is.null(params[["n_chunks"]])
+  ) {
     rtemis.core::abort(
-      "The uploaded object is not a Supervised model (rtemis::Supervised).",
+      "`name`, `total_bytes`, and `n_chunks` are required.",
       class = "rtemislive_invalid_params"
     )
   }
-
   s <- connection_session(conn)
-  job_id <- new_job_id()
-  now <- Sys.time()
-  job <- new.env(parent = emptyenv())
-  job[["id"]] <- job_id
-  job[["session_id"]] <- s[["id"]]
-  # `"train"`, not a distinct `"upload"` type: the object is exactly what a
-  # real train() job would have produced, and `type` is read only for
-  # display (`job_summary`) and `job.save`'s filename fallback -- nothing
-  # branches on it in a way an upload would need to differ from.
-  job[["type"]] <- "train"
-  job[["params"]] <- list()
-  job[["submitted_at"]] <- now
-  job[["started_at"]] <- now
-  job[["completed_at"]] <- now
-  job[["mirai"]] <- NULL
-  job[["result"]] <- result
-  job[["error"]] <- NULL
-  job[["progress"]] <- list()
-  job[["pending_expr"]] <- NULL
-  job[["pending_env"]] <- NULL
-  job[["status"]] <- "complete"
-
-  s[["jobs"]][[job_id]] <- job
-  touch_session(s)
-  rtemis.core::info(
-    "Job ",
-    job_id,
-    " loaded from an uploaded .rds (session ",
-    s[["id"]],
-    ").",
-    package = "rtemis.server"
+  upload_id <- begin_upload(
+    s,
+    name = params[["name"]],
+    total_bytes = params[["total_bytes"]],
+    n_chunks = params[["n_chunks"]]
   )
+  make_response(req_id, list(upload_id = upload_id))
+}
 
+
+#' `job.load.chunk` handler
+#'
+#' Requires the chunk bytes in the frame payload. Reuses `chunk_upload`
+#' unchanged, for `handle_job_load_begin`'s reason.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+handle_job_load_chunk <- function(conn, frame, server) {
+  req_id <- frame[["header"]][["id"]] %||% NA_character_
+  params <- frame[["header"]][["params"]] %||% list()
+  if (is.null(params[["upload_id"]]) || is.null(params[["chunk_index"]])) {
+    rtemis.core::abort(
+      "`upload_id` and `chunk_index` are required.",
+      class = "rtemislive_invalid_params"
+    )
+  }
+  payload <- frame[["payload"]]
+  if (is.null(payload) || !is.raw(payload)) {
+    rtemis.core::abort(
+      "Chunk payload is required.",
+      class = "rtemislive_invalid_params"
+    )
+  }
+  s <- connection_session(conn)
+  progress <- chunk_upload(
+    s,
+    upload_id = params[["upload_id"]],
+    chunk_index = params[["chunk_index"]],
+    bytes = payload
+  )
+  make_response(req_id, progress)
+}
+
+
+#' `job.load.end` handler
+#'
+#' Reassembles the chunks (`assemble_chunked_upload`, shared with
+#' `end_upload`) and finalizes into a job exactly as `handle_job_load` does
+#' for the single-shot path (`load_model_job`) -- the two ways of getting the
+#' bytes here converge on one finalization, so a rejection means the same
+#' thing whichever path a client used.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+handle_job_load_end <- function(conn, frame, server) {
+  req_id <- frame[["header"]][["id"]] %||% NA_character_
+  params <- frame[["header"]][["params"]] %||% list()
+  upload_id <- params[["upload_id"]]
+  if (is.null(upload_id)) {
+    rtemis.core::abort(
+      "`upload_id` is required.",
+      class = "rtemislive_invalid_params"
+    )
+  }
+  s <- connection_session(conn)
+  assembled <- assemble_chunked_upload(s, upload_id)
+  job <- load_model_job(s, assembled[["bytes"]])
   make_response(req_id, job_summary(job))
+}
+
+
+#' `job.load.cancel` handler
+#'
+#' Reuses `cancel_upload` unchanged, for `handle_job_load_begin`'s reason.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+handle_job_load_cancel <- function(conn, frame, server) {
+  req_id <- frame[["header"]][["id"]] %||% NA_character_
+  params <- frame[["header"]][["params"]] %||% list()
+  upload_id <- params[["upload_id"]]
+  if (is.null(upload_id)) {
+    rtemis.core::abort(
+      "`upload_id` is required.",
+      class = "rtemislive_invalid_params"
+    )
+  }
+  s <- connection_session(conn)
+  cancelled <- cancel_upload(s, upload_id)
+  make_response(req_id, list(cancelled = cancelled))
 }
 
 
@@ -2469,6 +2535,22 @@ handle_choose_dir <- function(conn, frame, server) {
   ),
   "job.load" = list(
     handler = handle_job_load,
+    requires = c("authed", "attached")
+  ),
+  "job.load.begin" = list(
+    handler = handle_job_load_begin,
+    requires = c("authed", "attached")
+  ),
+  "job.load.chunk" = list(
+    handler = handle_job_load_chunk,
+    requires = c("authed", "attached")
+  ),
+  "job.load.end" = list(
+    handler = handle_job_load_end,
+    requires = c("authed", "attached")
+  ),
+  "job.load.cancel" = list(
+    handler = handle_job_load_cancel,
     requires = c("authed", "attached")
   ),
   "dialog.choose_dir" = list(

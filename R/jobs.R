@@ -177,6 +177,98 @@ submit_job <- function(
 }
 
 
+#' Register an uploaded `.rds` as a completed job
+#'
+#' The finalization step shared by `job.load` (single-shot) and
+#' `job.load.end` (chunked, for a model too large for one WebSocket frame) --
+#' whichever path got the bytes here, they converge on the same read,
+#' validate, and register.
+#'
+#' `readRDS()` from a temp file, not `unserialize()` on the raw vector
+#' directly: it is what a client that wrote the file with `saveRDS()` (the
+#' ordinary R workflow, `outdir` or otherwise) actually produced, compression
+#' included. Rejected outright if the object is not a `Supervised` result --
+#' every downstream slice (`summary_json`, `varimp_table`,
+#' `predictions_table`, ...) assumes that shape, and failing here with one
+#' clear message beats failing later inside whichever slice a client happens
+#' to ask for first.
+#'
+#' `job[["type"]] <- "train"` rather than a distinct `"upload"` label: the
+#' object is exactly what a real `train()` job would have produced, and
+#' `type` is read only for display (`job_summary`) and `job.save`'s filename
+#' fallback -- nothing branches on it in a way an upload would need to
+#' differ from.
+#'
+#' @param session Session env.
+#' @param bytes Raw vector -- the complete `.rds` file.
+#'
+#' @return Job env, already inserted into `session[["jobs"]]`.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+load_model_job <- function(session, bytes) {
+  if (!is.raw(bytes) || length(bytes) == 0L) {
+    rtemis.core::abort(
+      "An `.rds` payload is required.",
+      class = "rtemislive_invalid_params"
+    )
+  }
+
+  tmp <- tempfile(fileext = ".rds")
+  on.exit(unlink(tmp), add = TRUE)
+  writeBin(bytes, tmp)
+
+  result <- tryCatch(
+    readRDS(tmp),
+    error = function(e) {
+      rtemis.core::abort(
+        "Could not read the uploaded file as an .rds object: ",
+        conditionMessage(e),
+        class = "rtemislive_invalid_params"
+      )
+    }
+  )
+
+  if (!inherits(result, "rtemis::Supervised")) {
+    rtemis.core::abort(
+      "The uploaded object is not a Supervised model (rtemis::Supervised).",
+      class = "rtemislive_invalid_params"
+    )
+  }
+
+  job_id <- new_job_id()
+  now <- Sys.time()
+  job <- new.env(parent = emptyenv())
+  job[["id"]] <- job_id
+  job[["session_id"]] <- session[["id"]]
+  job[["type"]] <- "train"
+  job[["params"]] <- list()
+  job[["submitted_at"]] <- now
+  job[["started_at"]] <- now
+  job[["completed_at"]] <- now
+  job[["mirai"]] <- NULL
+  job[["result"]] <- result
+  job[["error"]] <- NULL
+  job[["progress"]] <- list()
+  job[["pending_expr"]] <- NULL
+  job[["pending_env"]] <- NULL
+  job[["status"]] <- "complete"
+
+  session[["jobs"]][[job_id]] <- job
+  touch_session(session)
+  rtemis.core::info(
+    "Job ",
+    job_id,
+    " loaded from an uploaded .rds (session ",
+    session[["id"]],
+    ").",
+    package = "rtemis.server"
+  )
+  job
+}
+
+
 #' Promote queued jobs into running when slots are available
 #'
 #' Walks every session's job env, collects queued jobs across all
