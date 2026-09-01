@@ -10,14 +10,26 @@ rather than reconstructing the package's earlier history.
   or `train(..., outdir=)`), with no server or browser connection at all, had
   no way back into `rtemislive`: nothing accepted an `.rds` the server did not
   itself produce. `job.load` reads an uploaded `.rds` payload, rejects it
-  outright if it is not a `Supervised` result (every downstream slice assumes
-  that shape, and failing here with one message beats failing later inside
-  whichever slice a client asks for first), and registers it in the session's
-  job table with `status = "complete"`. `job.result`, `job.status`, and
-  `job.save` needed no changes at all — none of them ever checked how a job
-  env was built, only `job[["status"]]` and `job[["result"]]`, which is what
-  makes this a registration step rather than a second implementation of the
-  slicing logic those already have.
+  outright unless it is a `Supervised` or `SupervisedRes` result — the same
+  pair every downstream slice already accepts, a resampled/cross-validated
+  fit being exactly as valid a `train()` outcome as a single one, and failing
+  here with one message beats failing later inside whichever slice a client
+  asks for first — and registers it in the session's job table with
+  `status = "complete"`. `job.result`, `job.status`, and `job.save` needed no
+  changes at all — none of them ever checked how a job env was built, only
+  `job[["status"]]` and `job[["result"]]`, which is what makes this a
+  registration step rather than a second implementation of the slicing logic
+  those already have.
+- **`job.load` has a chunked counterpart (`job.load.begin`/`.chunk`/`.end`/
+  `.cancel`) for models too large for a single WebSocket frame.** A real
+  fitted model can exceed the frame size `nanonext`'s WebSocket handler
+  enforces, closing the connection with code 1009 ("message too large")
+  before `job.load` ever ran — nanonext exposes no option to raise that
+  limit. The chunked path reuses `data.upload`'s own assembly logic
+  (`assemble_chunked_upload()`, factored out of `end_upload()`) and
+  `load_model_job()`'s finalization (factored out of the single-shot
+  handler), so both entry points converge on identical validation and
+  produce identical jobs.
 - **Updated the `algorithms` handler to use new `rtemis::supervised_algorithms` 
   column names.**
 - **`train` accepts a set of named variants as its learner.** `supervised/v1`

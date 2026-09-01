@@ -187,11 +187,13 @@ submit_job <- function(
 #' `readRDS()` from a temp file, not `unserialize()` on the raw vector
 #' directly: it is what a client that wrote the file with `saveRDS()` (the
 #' ordinary R workflow, `outdir` or otherwise) actually produced, compression
-#' included. Rejected outright if the object is not a `Supervised` result --
-#' every downstream slice (`summary_json`, `varimp_table`,
-#' `predictions_table`, ...) assumes that shape, and failing here with one
-#' clear message beats failing later inside whichever slice a client happens
-#' to ask for first.
+#' included. Rejected outright unless the object is a `Supervised` or
+#' `SupervisedRes` result -- the same pair every downstream slice
+#' (`summary_json`, `varimp_table`, `predictions_table`, ...) already accepts
+#' (`serial.R`), a resampled/cross-validated fit being exactly as valid a
+#' `train()` outcome as a single one. Failing here with one clear message
+#' beats failing later inside whichever slice a client happens to ask for
+#' first.
 #'
 #' `job[["type"]] <- "train"` rather than a distinct `"upload"` label: the
 #' object is exactly what a real `train()` job would have produced, and
@@ -230,9 +232,12 @@ load_model_job <- function(session, bytes) {
     }
   )
 
-  if (!inherits(result, "rtemis::Supervised")) {
+  if (
+    !inherits(result, "rtemis::Supervised") &&
+      !inherits(result, "rtemis::SupervisedRes")
+  ) {
     rtemis.core::abort(
-      "The uploaded object is not a Supervised model (rtemis::Supervised).",
+      "The uploaded object is not a Supervised model (rtemis::Supervised or rtemis::SupervisedRes).",
       class = "rtemislive_invalid_params"
     )
   }

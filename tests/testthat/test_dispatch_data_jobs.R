@@ -872,6 +872,51 @@ test_that("job.load rejects a valid .rds that is not a Supervised object", {
   expect_match(resp[["error"]][["message"]], "Supervised")
 })
 
+#' A resampled (`SupervisedRes`) fit, trained directly rather than through
+#' the wire's single-fit `train` RPC -- `outer_resampling_config` is what
+#' turns a `train()` outcome into a `SupervisedRes`, and every downstream
+#' slice in `serial.R` already accepts this shape alongside a plain
+#' `Supervised` fit, so `job.load` should too.
+train_glm_res_result <- function() {
+  skip_if_not_installed("rtemis")
+  set.seed(2026L)
+  dt <- data.table(a = rnorm(60), b = rnorm(60), y = NA_real_)
+  dt[, y := a + 0.5 * b + rnorm(60)]
+  rtemis::train(
+    dt,
+    hyperparameters = rtemis::setup_GLM(),
+    outer_resampling_config = rtemis::setup_KFold(n_resamples = 3L, seed = 1L),
+    verbosity = 0L
+  )
+}
+
+test_that("job.load registers an uploaded SupervisedRes result as a complete job", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  server <- make_server()
+  conn <- authed_conn(server, attach_session = "s")
+
+  fit <- train_glm_res_result()
+  expect_true(inherits(fit, "rtemis::SupervisedRes"))
+
+  resp <- dispatch_request(
+    conn,
+    make_request("job.load", payload = rds_bytes(fit)),
+    server
+  )
+  expect_true(resp[["ok"]])
+  job_id <- resp[["result"]][["job_id"]]
+  expect_equal(resp[["result"]][["status"]], "complete")
+
+  result <- dispatch_request(
+    conn,
+    make_request("job.result", params = list(job_id = job_id)),
+    server
+  )
+  expect_true(result[["ok"]])
+  expect_equal(result[["result"]][["algorithm"]], "GLM")
+})
+
 
 # job.load.begin / chunk / end / cancel --------------------------------------
 #
