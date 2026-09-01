@@ -5,6 +5,19 @@ rather than reconstructing the package's earlier history.
 
 ## 0.2.1
 
+- **`job.load` registers a previously-saved model as a completed job — the
+  counterpart of `job.save`.** A model trained in a bare R console (`saveRDS()`,
+  or `train(..., outdir=)`), with no server or browser connection at all, had
+  no way back into `rtemislive`: nothing accepted an `.rds` the server did not
+  itself produce. `job.load` reads an uploaded `.rds` payload, rejects it
+  outright if it is not a `Supervised` result (every downstream slice assumes
+  that shape, and failing here with one message beats failing later inside
+  whichever slice a client asks for first), and registers it in the session's
+  job table with `status = "complete"`. `job.result`, `job.status`, and
+  `job.save` needed no changes at all — none of them ever checked how a job
+  env was built, only `job[["status"]]` and `job[["result"]]`, which is what
+  makes this a registration step rather than a second implementation of the
+  slicing logic those already have.
 - **Updated the `algorithms` handler to use new `rtemis::supervised_algorithms` 
   column names.**
 - **`train` accepts a set of named variants as its learner.** `supervised/v1`

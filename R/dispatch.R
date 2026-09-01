@@ -2053,6 +2053,97 @@ handle_job_delete <- function(conn, frame, server) {
 }
 
 
+#' `job.load` handler
+#'
+#' The counterpart of `job.save`: register an uploaded `.rds` as a completed
+#' job, so every other job.* RPC serves it exactly as it would one this
+#' server trained itself. `job.result`/`job.save`/`job.status` only ever
+#' look at `job[["result"]]` and `job[["status"]]` -- nothing checks how the
+#' job env was built, which is what makes this a registration step rather
+#' than a parallel implementation of the slicing logic those already have.
+#'
+#' The payload is a raw `.rds` file, written to a temp path and read back
+#' with [readRDS()] rather than `unserialize()`d directly from memory --
+#' `readRDS()` is what a client that saved the file with `saveRDS()` (the
+#' ordinary R workflow, `outdir` or otherwise) actually wrote, compression
+#' included. Rejected outright if the object is not a `Supervised` result:
+#' every downstream slice (`summary_json`, `varimp_table`, `predictions_table`,
+#' ...) assumes that shape, and failing here with one clear message beats
+#' failing later inside whichever slice a client happens to ask for first.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+handle_job_load <- function(conn, frame, server) {
+  req_id <- frame[["header"]][["id"]] %||% NA_character_
+  payload <- frame[["payload"]]
+  if (is.null(payload) || !is.raw(payload) || length(payload) == 0L) {
+    rtemis.core::abort(
+      "An `.rds` payload is required for job.load.",
+      class = "rtemislive_invalid_params"
+    )
+  }
+
+  tmp <- tempfile(fileext = ".rds")
+  on.exit(unlink(tmp), add = TRUE)
+  writeBin(payload, tmp)
+
+  result <- tryCatch(
+    readRDS(tmp),
+    error = function(e) {
+      rtemis.core::abort(
+        "Could not read the uploaded file as an .rds object: ",
+        conditionMessage(e),
+        class = "rtemislive_invalid_params"
+      )
+    }
+  )
+
+  if (!inherits(result, "rtemis::Supervised")) {
+    rtemis.core::abort(
+      "The uploaded object is not a Supervised model (rtemis::Supervised).",
+      class = "rtemislive_invalid_params"
+    )
+  }
+
+  s <- connection_session(conn)
+  job_id <- new_job_id()
+  now <- Sys.time()
+  job <- new.env(parent = emptyenv())
+  job[["id"]] <- job_id
+  job[["session_id"]] <- s[["id"]]
+  # `"train"`, not a distinct `"upload"` type: the object is exactly what a
+  # real train() job would have produced, and `type` is read only for
+  # display (`job_summary`) and `job.save`'s filename fallback -- nothing
+  # branches on it in a way an upload would need to differ from.
+  job[["type"]] <- "train"
+  job[["params"]] <- list()
+  job[["submitted_at"]] <- now
+  job[["started_at"]] <- now
+  job[["completed_at"]] <- now
+  job[["mirai"]] <- NULL
+  job[["result"]] <- result
+  job[["error"]] <- NULL
+  job[["progress"]] <- list()
+  job[["pending_expr"]] <- NULL
+  job[["pending_env"]] <- NULL
+  job[["status"]] <- "complete"
+
+  s[["jobs"]][[job_id]] <- job
+  touch_session(s)
+  rtemis.core::info(
+    "Job ",
+    job_id,
+    " loaded from an uploaded .rds (session ",
+    s[["id"]],
+    ").",
+    package = "rtemis.server"
+  )
+
+  make_response(req_id, job_summary(job))
+}
+
+
 #' `job.save` handler
 #'
 #' Serialize a completed job's full result object to an `.rds` file on the
@@ -2374,6 +2465,10 @@ handle_choose_dir <- function(conn, frame, server) {
   ),
   "job.save" = list(
     handler = handle_job_save,
+    requires = c("authed", "attached")
+  ),
+  "job.load" = list(
+    handler = handle_job_load,
     requires = c("authed", "attached")
   ),
   "dialog.choose_dir" = list(

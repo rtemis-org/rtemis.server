@@ -720,6 +720,156 @@ test_that("job.save on an unresolved job -> invalid_params", {
 })
 
 
+# job.load --------------------------------------------------------------
+
+#' A real, resolved GLM regression job's result, for job.load fixtures.
+#' Trained rather than hand-built: job.load's own validation is that the
+#' object satisfies everything the downstream slices expect, which a fixture
+#' assembled by hand could get subtly wrong in the one place that matters.
+train_glm_result <- function(conn, server) {
+  set.seed(2026L)
+  dt <- data.table(a = rnorm(60), b = rnorm(60), y = NA_real_)
+  dt[, y := a + 0.5 * b + rnorm(60)]
+  upload <- dispatch_request(
+    conn,
+    make_request(
+      "data.upload",
+      params = list(name = "small"),
+      payload = ipc_bytes(dt)
+    ),
+    server
+  )
+  handle <- upload[["result"]][["data_handle"]]
+  submitted <- dispatch_request(
+    conn,
+    make_request("train", params = list(data_handle = handle, algorithm = "GLM")),
+    server
+  )
+  job_id <- submitted[["result"]][["job_id"]]
+  s <- connection_session(conn)
+  job <- get_job(s, job_id)
+  wait_for_resolved(job)
+  check_job_resolved(job)
+  job[["result"]]
+}
+
+rds_bytes <- function(object) {
+  tmp <- tempfile(fileext = ".rds")
+  on.exit(unlink(tmp), add = TRUE)
+  saveRDS(object, tmp)
+  readBin(tmp, "raw", n = file.size(tmp))
+}
+
+test_that("job.load registers an uploaded Supervised result as a complete job", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  server <- make_server()
+  conn <- authed_conn(server, attach_session = "s")
+
+  trained <- train_glm_result(conn, server)
+
+  resp <- dispatch_request(
+    conn,
+    make_request("job.load", payload = rds_bytes(trained)),
+    server
+  )
+  expect_true(resp[["ok"]])
+  job_id <- resp[["result"]][["job_id"]]
+  expect_match(job_id, "^job-")
+  expect_equal(resp[["result"]][["status"]], "complete")
+  expect_equal(resp[["result"]][["type"]], "train")
+
+  # Every other job.* RPC serves it exactly as a trained job -- the whole
+  # point of registering it rather than answering job.result specially.
+  status <- dispatch_request(
+    conn,
+    make_request("job.status", params = list(job_id = job_id)),
+    server
+  )
+  expect_true(status[["ok"]])
+  expect_equal(status[["result"]][["status"]], "complete")
+
+  result <- dispatch_request(
+    conn,
+    make_request("job.result", params = list(job_id = job_id)),
+    server
+  )
+  expect_true(result[["ok"]])
+  expect_equal(result[["result"]][["type"]], "Regression")
+  expect_equal(result[["result"]][["algorithm"]], "GLM")
+
+  listed <- dispatch_request(conn, make_request("job.list"), server)
+  ids <- vapply(listed[["result"]][["jobs"]], `[[`, character(1L), "job_id")
+  expect_true(job_id %in% ids)
+})
+
+test_that("job.load round-trips through job.save", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  server <- make_server()
+  conn <- authed_conn(server, attach_session = "s")
+  trained <- train_glm_result(conn, server)
+
+  loaded <- dispatch_request(
+    conn,
+    make_request("job.load", payload = rds_bytes(trained)),
+    server
+  )
+  job_id <- loaded[["result"]][["job_id"]]
+
+  dir <- file.path(tempdir(), basename(tempfile("loadtest_")))
+  on.exit(unlink(dir, recursive = TRUE), add = TRUE)
+  saved <- dispatch_request(
+    conn,
+    make_request("job.save", params = list(job_id = job_id, dir = dir)),
+    server
+  )
+  expect_true(saved[["ok"]])
+  # "train_..." from job.load's own type, not a distinct upload label.
+  expect_match(basename(saved[["result"]][["path"]]), "^train_.*\\.rds$")
+  expect_s3_class(readRDS(saved[["result"]][["path"]]), "rtemis::Supervised")
+})
+
+test_that("job.load requires a payload", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  server <- make_server()
+  conn <- authed_conn(server, attach_session = "s")
+  resp <- dispatch_request(conn, make_request("job.load"), server)
+  expect_false(resp[["ok"]])
+  expect_equal(resp[["error"]][["code"]], "invalid_params")
+})
+
+test_that("job.load rejects bytes that are not a readable .rds file", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  server <- make_server()
+  conn <- authed_conn(server, attach_session = "s")
+  resp <- dispatch_request(
+    conn,
+    make_request("job.load", payload = as.raw(c(0x00, 0x01, 0x02, 0xff))),
+    server
+  )
+  expect_false(resp[["ok"]])
+  expect_equal(resp[["error"]][["code"]], "invalid_params")
+})
+
+test_that("job.load rejects a valid .rds that is not a Supervised object", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  server <- make_server()
+  conn <- authed_conn(server, attach_session = "s")
+  resp <- dispatch_request(
+    conn,
+    make_request("job.load", payload = rds_bytes(list(answer = 42L))),
+    server
+  )
+  expect_false(resp[["ok"]])
+  expect_equal(resp[["error"]][["code"]], "invalid_params")
+  expect_match(resp[["error"]][["message"]], "Supervised")
+})
+
+
 # Method table coverage -----------------------------------------------------
 
 test_that("method table now exposes all wire methods", {
@@ -750,6 +900,7 @@ test_that("method table now exposes all wire methods", {
     "job.result",
     "job.delete",
     "job.save",
+    "job.load",
     "dialog.choose_dir"
   )
   expect_true(all(expected %in% names(.METHOD_TABLE)))
