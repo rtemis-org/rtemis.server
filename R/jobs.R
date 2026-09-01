@@ -242,6 +242,24 @@ load_model_job <- function(session, bytes) {
     )
   }
 
+  # An uploaded model's `@session` (when it has one -- rtemis versions
+  # before observability capture existed, or a session that recorded no
+  # events, leave it NULL) holds the *original* run's wall-clock bounds.
+  # Preferring those over "now" is what keeps the badge's elapsed time
+  # honest -- otherwise submitted/started/completed all collapse to the
+  # instant of upload and every loaded model reads "Done in 0.00s".
+  obs_session <- tryCatch(prop(result, "session"), error = function(e) NULL)
+  run_started <- if (is.null(obs_session)) {
+    NULL
+  } else {
+    prop(obs_session, "started")
+  }
+  run_finished <- if (is.null(obs_session)) {
+    NULL
+  } else {
+    prop(obs_session, "finished")
+  }
+
   job_id <- new_job_id()
   now <- Sys.time()
   job <- new.env(parent = emptyenv())
@@ -249,9 +267,9 @@ load_model_job <- function(session, bytes) {
   job[["session_id"]] <- session[["id"]]
   job[["type"]] <- "train"
   job[["params"]] <- list()
-  job[["submitted_at"]] <- now
-  job[["started_at"]] <- now
-  job[["completed_at"]] <- now
+  job[["submitted_at"]] <- run_started %||% now
+  job[["started_at"]] <- run_started %||% now
+  job[["completed_at"]] <- run_finished %||% now
   job[["mirai"]] <- NULL
   job[["result"]] <- result
   job[["error"]] <- NULL

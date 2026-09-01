@@ -806,6 +806,37 @@ test_that("job.load registers an uploaded Supervised result as a complete job", 
   expect_true(job_id %in% ids)
 })
 
+test_that("job.load's timing comes from the model's own session, not upload time", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  server <- make_server()
+  conn <- authed_conn(server, attach_session = "s")
+
+  trained <- train_glm_result(conn, server)
+  obs_session <- prop(trained, "session")
+  skip_if(is.null(obs_session), "fitted result carries no observability session")
+  run_started <- prop(obs_session, "started")
+  run_finished <- prop(obs_session, "finished")
+  skip_if(
+    is.null(run_started) || is.null(run_finished),
+    "session recorded no wall-clock bounds"
+  )
+
+  loaded <- dispatch_request(
+    conn,
+    make_request("job.load", payload = rds_bytes(trained)),
+    server
+  )
+  job_id <- loaded[["result"]][["job_id"]]
+  s <- connection_session(conn)
+  job <- get_job(s, job_id)
+
+  expect_equal(job[["started_at"]], run_started)
+  expect_equal(job[["completed_at"]], run_finished)
+  # Not "now": the original run predates this test's job.load call.
+  expect_true(job[["completed_at"]] < Sys.time())
+})
+
 test_that("job.load round-trips through job.save", {
   clear_sessions()
   on.exit(clear_sessions(), add = TRUE)

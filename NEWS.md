@@ -19,7 +19,11 @@ rather than reconstructing the package's earlier history.
   changes at all — none of them ever checked how a job env was built, only
   `job[["status"]]` and `job[["result"]]`, which is what makes this a
   registration step rather than a second implementation of the slicing logic
-  those already have.
+  those already have. `submitted_at`/`started_at`/`completed_at` come from
+  the model's own observability session (`@session`, `started`/`finished`)
+  when it has one, not from the moment of upload — otherwise a real training
+  run's elapsed time collapses to zero in the client's "Done in Ns" badge,
+  since submit, start and finish would all be the same instant.
 - **`job.load` has a chunked counterpart (`job.load.begin`/`.chunk`/`.end`/
   `.cancel`) for models too large for a single WebSocket frame.** A real
   fitted model can exceed the frame size `nanonext`'s WebSocket handler
