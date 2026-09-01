@@ -12,7 +12,7 @@
 #' @import data.table later methods nanonext openssl rtemis.core S7 utils
 #' @importFrom jsonlite toJSON fromJSON
 #' @importFrom rtemis to_json
-#' @importFrom rtemis setup_SuperConfigLive setup_SupervisedPreprocessor setup_Resampler setup_ExecutionConfig
+#' @importFrom rtemis setup_SuperConfigLive setup_SupervisedPreprocessor setup_ExecutionConfig
 "_PACKAGE"
 
 NULL

@@ -5,6 +5,8 @@ rather than reconstructing the package's earlier history.
 
 ## 0.2.1
 
+- **Updated the `algorithms` handler to use new `rtemis::supervised_algorithms` 
+  column names.**
 - **`train` accepts a set of named variants as its learner.** `supervised/v1`
   allows `hyperparameters` to be either one configuration or a union of named
   configurations of the same algorithm, and rtemis has reconstructed both for

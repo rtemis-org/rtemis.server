@@ -76,7 +76,7 @@ test_that("build_super_config builds a SuperConfigLive from the form wire shape"
     ),
     dt
   )
-  expect_true(inherits(cfg, "rtemis::SuperConfigLive"))
+  expect_true(inherits(cfg, "rtemis::SuperConfigTabular"))
   expect_equal(prop(prop(cfg, "hyperparameters"), "algorithm"), "GLM")
   expect_equal(
     prop(prop(cfg, "outer_resampling_config"), "n_resamples"),
@@ -144,7 +144,7 @@ test_that("build_super_config accepts a canonical schema.rtemis.org config", {
     ),
     dt
   )
-  expect_true(inherits(cfg, "rtemis::SuperConfigLive"))
+  expect_true(inherits(cfg, "rtemis::SuperConfigTabular"))
   expect_equal(
     prop(prop(cfg, "outer_resampling_config"), "n_resamples"),
     3L
@@ -208,7 +208,7 @@ test_that("build_super_config accepts a config that names no learner", {
     ),
     dt
   )
-  expect_true(inherits(cfg, "rtemis::SuperConfigLive"))
+  expect_true(inherits(cfg, "rtemis::SuperConfigTabular"))
   expect_null(prop(cfg, "hyperparameters"))
 })
 
@@ -288,10 +288,17 @@ test_that(".live_build_schema surfaces choices for scalar-default enum args", {
 
 
 test_that(".live_build_schema still reads `match.arg`-style formals", {
-  # `resampler.describe` has no single object to read (`type` selects the
-  # subclass), so the `c("a", "b", ...)` formal remains the fallback.
+  # No shipped `setup_*` uses the bare `c("a", "b", ...)` formal idiom any
+  # longer (`setup_Resampler(type = )` was the last one, split into
+  # `setup_KFold()`/`setup_StratSub()`/etc., each with no such formal) --
+  # but a dispatcher with no single object to read against, whose `type`
+  # selects the subclass, is a shape `.live_build_schema` must still handle.
+  # Exercised here with a local stand-in rather than real production code.
+  synthetic_dispatcher <- function(type = c("KFold", "StratSub"), n = 10L) {
+    NULL
+  }
   by_name <- function(x) setNames(x, vapply(x, `[[`, character(1L), "name"))
-  schema <- by_name(rtemis.server:::.live_build_schema(rtemis::setup_Resampler))
+  schema <- by_name(rtemis.server:::.live_build_schema(synthetic_dispatcher))
   expect_true("KFold" %in% unlist(schema[["type"]][["choices"]]))
   expect_equal(schema[["type"]][["default"]], "KFold")
 })

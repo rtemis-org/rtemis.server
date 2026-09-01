@@ -437,16 +437,16 @@ handle_algorithms <- function(conn, frame, server) {
   }
   .require_cols(
     tbl,
-    c("name", "description", "class", "reg", "surv"),
+    c("name", "description", "classification", "regression", "survival"),
     "supervised_algorithms"
   )
   algorithms <- lapply(seq_len(nrow(tbl)), function(i) {
     list(
       name = as.character(tbl[i, "name"]),
       description = as.character(tbl[i, "description"]),
-      supports_classification = isTRUE(as.logical(tbl[i, "class"])),
-      supports_regression = isTRUE(as.logical(tbl[i, "reg"])),
-      supports_survival = isTRUE(as.logical(tbl[i, "surv"]))
+      supports_classification = isTRUE(as.logical(tbl[i, "classification"])),
+      supports_regression = isTRUE(as.logical(tbl[i, "regression"])),
+      supports_survival = isTRUE(as.logical(tbl[i, "survival"]))
     )
   })
   make_response(req_id, list(algorithms = algorithms))
@@ -564,9 +564,9 @@ prop_enums <- function(config) {
       error = function(e) NULL
     )
     # Enumerated choices come from the property, which is where rtemis declares
-    # and validates them; the `match.arg`-style `c("a", "b", ...)` formal is the
-    # fallback for schemas built without an object (`resampler.describe`, whose
-    # `type` selects the subclass and so has no single object to read).
+    # and validates them; the `match.arg`-style `c("a", "b", ...)` formal is
+    # the fallback for schemas built without an object -- a dispatcher whose
+    # `type` selects the subclass has no single object to read against.
     choices <- enums[[arg]] %||%
       if (is.character(default) && length(default) > 1L) as.list(default)
     # A multi-value default is the `match.arg` idiom: `setup_fn()` uses the
@@ -914,32 +914,11 @@ handle_cluster_algorithm_describe <- function(conn, frame, server) {
 }
 
 
-#' `resampler.describe` handler
-#'
-#' Returns the schema for `setup_Resampler()` so the client can render a
-#' resampler configuration form. Same shape as `algorithm.describe`
-#' but with no tunable flags - resampler parameters are fixed once
-#' chosen. The `type` arg surfaces its enumerated choices via the
-#' `choices` field.
-#'
-#' Wire response: `{ parameters: [{ name, type, default, tunable,
-#' choices? }, ...] }`.
-#'
-#' @author EDG
-#' @keywords internal
-#' @noRd
-handle_resampler_describe <- function(conn, frame, server) {
-  req_id <- frame[["header"]][["id"]] %||% NA_character_
-  parameters <- .live_build_schema(setup_Resampler)
-  make_response(req_id, list(parameters = parameters))
-}
-
-
 #' `preprocessor.describe` handler
 #'
 #' Returns the schema for `setup_SupervisedPreprocessor()` so the client can
 #' render a preprocessing configuration form. Same shape and machinery as
-#' `resampler.describe`. `impute_missRanger_params` is a nested list with
+#' `algorithm.describe`. `impute_missRanger_params` is a nested list with
 #' no scalar control, so it is omitted here and left to the server-side
 #' default; the matching `train` handler still accepts it.
 #'
@@ -2289,10 +2268,6 @@ handle_choose_dir <- function(conn, frame, server) {
   ),
   "cluster.algorithm.describe" = list(
     handler = handle_cluster_algorithm_describe,
-    requires = "authed"
-  ),
-  "resampler.describe" = list(
-    handler = handle_resampler_describe,
     requires = "authed"
   ),
   "preprocessor.describe" = list(
