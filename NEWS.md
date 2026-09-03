@@ -5,6 +5,11 @@ rather than reconstructing the package's earlier history.
 
 ## 0.2.1
 
+- **The wire's `algorithm` is folded in beside its flat hyperparameter map,
+  not above a nested one.** `hyperparameters/v1` now carries an algorithm's
+  settings as siblings of its name, so `.nest_hyperparameters()` produces
+  `{algorithm, ...settings}`, which is exactly what rtemis's reader takes. A
+  variants set still passes through untouched.
 - **`job.load` registers a previously-saved model as a completed job — the
   counterpart of `job.save`.** A model trained in a bare R console (`saveRDS()`,
   or `train(..., outdir=)`), with no server or browser connection at all, had

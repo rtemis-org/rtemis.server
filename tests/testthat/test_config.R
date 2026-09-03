@@ -123,7 +123,7 @@ test_that("transport keys are stripped before the config is built", {
 
 test_that("build_super_config accepts a canonical schema.rtemis.org config", {
   # The object rtemislive stores on a job snapshot and shows in the Config
-  # view: `$schema` markers, nested `{algorithm, hyperparameters}` with no
+  # view: `$schema` markers, the learner as `{algorithm, ...settings}` with no
   # top-level `algorithm`, and the same `n_resamples` spelling as the setup
   # formal. It must reach the same `SuperConfigLive`.
   dt <- data.table(a = rnorm(20), b = rnorm(20), y = rnorm(20))
@@ -131,10 +131,7 @@ test_that("build_super_config accepts a canonical schema.rtemis.org config", {
     list(
       `$schema` = "https://schema.rtemis.org/supervised/v1/schema.json",
       data_handle = "d1",
-      hyperparameters = list(
-        algorithm = "GLM",
-        hyperparameters = list(ifw = FALSE)
-      ),
+      hyperparameters = list(algorithm = "GLM", ifw = FALSE),
       preprocessor_config = list(
         `$schema` = "https://schema.rtemis.org/preprocessor/v1/schema.json",
         scale = TRUE,
@@ -176,10 +173,7 @@ test_that("build_super_config accepts a variants set as the learner", {
       data_handle = "d1",
       hyperparameters = list(
         variants = list(
-          default = list(
-            algorithm = "Ranger",
-            hyperparameters = list(num_trees = 500L)
-          )
+          default = list(algorithm = "Ranger", num_trees = 500L)
         )
       ),
       outer_resampling_config = list(type = "KFold", n_resamples = 3L)

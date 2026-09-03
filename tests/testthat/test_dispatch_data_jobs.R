@@ -814,7 +814,10 @@ test_that("job.load's timing comes from the model's own session, not upload time
 
   trained <- train_glm_result(conn, server)
   obs_session <- prop(trained, "session")
-  skip_if(is.null(obs_session), "fitted result carries no observability session")
+  skip_if(
+    is.null(obs_session),
+    "fitted result carries no observability session"
+  )
   run_started <- prop(obs_session, "started")
   run_finished <- prop(obs_session, "finished")
   skip_if(

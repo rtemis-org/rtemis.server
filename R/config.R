@@ -112,14 +112,14 @@
 }
 
 
-#' Nest the wire's `algorithm` + flat hyperparameter map
+#' Fold the wire's `algorithm` into its flat hyperparameter map
 #'
 #' The wire speaks `setup_*()` formals: `algorithm` names the learner and
 #' `hyperparameters` is its flat name -> value map, which is what the
 #' `algorithm.describe` schema publishes and what rtemislive's form emits. A
 #' `SuperConfig` names the algorithm once, inside `hyperparameters`, as the
-#' discriminator of the `{algorithm, hyperparameters}` union. This is the
-#' flat-wire / nested-config shape difference, and lifting it here leaves
+#' discriminator beside the settings -- `{"algorithm": "Ranger", "num_trees":
+#' 500}`, the shape `hyperparameters/v1` declares. Folding it here leaves
 #' rtemis's reconstructor with exactly one shape to accept.
 #'
 #' @param params Named list of wire params.
@@ -135,9 +135,9 @@
     return(params)
   }
   params[["algorithm"]] <- NULL
-  params[["hyperparameters"]] <- list(
-    algorithm = algorithm,
-    hyperparameters = params[["hyperparameters"]] %||% list()
+  params[["hyperparameters"]] <- c(
+    list(algorithm = algorithm),
+    params[["hyperparameters"]] %||% list()
   )
   params
 }

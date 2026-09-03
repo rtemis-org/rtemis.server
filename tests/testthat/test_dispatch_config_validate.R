@@ -54,7 +54,7 @@ authed_conn <- function(server, attach_session = NULL) {
 # shape the handler has to collapse.
 wire_config <- function(...) {
   list(
-    hyperparameters = list(algorithm = "LightRF", hyperparameters = list()),
+    hyperparameters = list(algorithm = "LightRF"),
     ...
   )
 }

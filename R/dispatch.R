@@ -1394,12 +1394,13 @@ handle_data_delete <- function(conn, frame, server) {
 #'   `hyperparameters` is a variants set, which names the algorithm inside each
 #'   variant, or when no learner is being named at all and rtemis's default
 #'   should apply.
-#' - `hyperparameters` - flat `name -> value` map, the nested
-#'   `{ algorithm, hyperparameters }` shape, or the variants set
-#'   `{ variants: { <name>: { algorithm, hyperparameters } } }` -- the third is
-#'   `supervised/v1`'s second form for the block, and reaches
-#'   `.list_to_HyperparametersSet()` untouched because `.nest_hyperparameters()`
-#'   only folds when a top-level `algorithm` is present.
+#' - `hyperparameters` - flat `name -> value` map beside a top-level
+#'   `algorithm`, the config shape `{ algorithm, ...settings }` with the name
+#'   inside it, or the variants set `{ variants: { <name>: { algorithm,
+#'   ...settings } } }` -- the third is `supervised/v1`'s second form for the
+#'   block, and reaches `.list_to_HyperparametersSet()` untouched because
+#'   `.nest_hyperparameters()` only folds when a top-level `algorithm` is
+#'   present.
 #' - `preprocessor_config`, `decomposition_config`, `tuner_config`,
 #'   `outer_resampling_config`, `execution_config` - JSON objects
 #' - `weights` - character; column name in the dataset used as weights
@@ -1557,10 +1558,11 @@ handle_unsupervised <- function(conn, frame, server, kind) {
   x <- subset_features(get_data(s, data_handle), params[["features"]])
 
   # The wire sends the form's flat name -> value map as `hyperparameters`; a
-  # canonical config nests the same map under `config`. `.drop_meta_keys()`
+  # canonical config carries the same map as siblings of `algorithm`, which
+  # the catalogue lookup above has already consumed. `.drop_meta_keys()`
   # strips `$`-prefixed document metadata (`$schema`) that a config lifted from
   # a schema.rtemis.org file carries; any other unknown key still errors.
-  hp <- params[["config"]] %||% params[["hyperparameters"]] %||% list()
+  hp <- params[["hyperparameters"]] %||% list()
   cfg <- tryCatch(
     do.call(
       # rtemis exports every `setup_<Algo>()`; `alg_name` came from the

@@ -240,9 +240,9 @@ test_that(".collapse_scalar_lists output drives rtemis tuning detection", {
   collapsed <- rtemis.server:::.collapse_scalar_lists(raw)
   expect_equal(collapsed[["num_trees"]][["candidates"]], c(100L, 500L, 1000L))
 
-  hp <- rtemis::.list_to_Hyperparameters(list(
-    algorithm = "Ranger",
-    hyperparameters = collapsed
+  hp <- rtemis::.list_to_Hyperparameters(c(
+    list(algorithm = "Ranger"),
+    collapsed
   ))
   expect_true(inherits(hp, "rtemis::Hyperparameters"))
   expect_true(needs_tuning(hp))
@@ -259,10 +259,7 @@ test_that("a bare multi-value array is a value, not a search space", {
   )
   collapsed <- rtemis.server:::.collapse_scalar_lists(raw)
   expect_error(
-    rtemis::.list_to_Hyperparameters(list(
-      algorithm = "Ranger",
-      hyperparameters = collapsed
-    )),
+    rtemis::.list_to_Hyperparameters(c(list(algorithm = "Ranger"), collapsed)),
     "hyperparameter takes one"
   )
 })
