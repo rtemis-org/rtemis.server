@@ -278,22 +278,24 @@ chunk_upload <- function(session, upload_id, chunk_index, bytes) {
 }
 
 
-#' Finalize a chunked upload
+#' Reassemble a chunked upload's bytes, and clear its pending state
 #'
-#' Concatenates received chunks in order, decodes as Arrow IPC, and
-#' registers a new data_handle. Removes the pending-upload state regardless
-#' of success.
+#' The part every `*.upload.end` handler needs identically -- `end_upload`
+#' (Arrow IPC data) and `job.load.end` (an uploaded `.rds`) differ only in
+#' what the finished bytes decode to, never in how the chunks got there or
+#' how completeness is checked. Extracted so that difference is the only
+#' thing either caller has to say.
 #'
 #' @param session Session env.
 #' @param upload_id Character scalar.
-#' @param max_handles Integer: Per-session data_handle cap.
 #'
-#' @return Named list - wire-shaped data_handle summary.
+#' @return Named list - `bytes` (raw vector, the concatenated upload) and
+#'   `name` (the label `begin_upload` was given).
 #'
 #' @author EDG
 #' @keywords internal
 #' @noRd
-end_upload <- function(session, upload_id, max_handles = 16L) {
+assemble_chunked_upload <- function(session, upload_id) {
   pu <- pending_uploads(session)
   u <- pu[[upload_id]]
   if (is.null(u)) {
@@ -328,8 +330,33 @@ end_upload <- function(session, upload_id, max_handles = 16L) {
     )
   }
 
-  bytes <- do.call(c, u[["chunks"]])
-  new_data_handle(session, u[["name"]], bytes, max_handles = max_handles)
+  list(bytes = do.call(c, u[["chunks"]]), name = u[["name"]])
+}
+
+
+#' Finalize a chunked upload
+#'
+#' Concatenates received chunks in order, decodes as Arrow IPC, and
+#' registers a new data_handle. Removes the pending-upload state regardless
+#' of success.
+#'
+#' @param session Session env.
+#' @param upload_id Character scalar.
+#' @param max_handles Integer: Per-session data_handle cap.
+#'
+#' @return Named list - wire-shaped data_handle summary.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+end_upload <- function(session, upload_id, max_handles = 16L) {
+  assembled <- assemble_chunked_upload(session, upload_id)
+  new_data_handle(
+    session,
+    assembled[["name"]],
+    assembled[["bytes"]],
+    max_handles = max_handles
+  )
 }
 
 

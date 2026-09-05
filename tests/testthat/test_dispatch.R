@@ -240,9 +240,9 @@ test_that(".collapse_scalar_lists output drives rtemis tuning detection", {
   collapsed <- rtemis.server:::.collapse_scalar_lists(raw)
   expect_equal(collapsed[["num_trees"]][["candidates"]], c(100L, 500L, 1000L))
 
-  hp <- rtemis::.list_to_Hyperparameters(list(
-    algorithm = "Ranger",
-    hyperparameters = collapsed
+  hp <- rtemis::.list_to_Hyperparameters(c(
+    list(algorithm = "Ranger"),
+    collapsed
   ))
   expect_true(inherits(hp, "rtemis::Hyperparameters"))
   expect_true(needs_tuning(hp))
@@ -259,10 +259,7 @@ test_that("a bare multi-value array is a value, not a search space", {
   )
   collapsed <- rtemis.server:::.collapse_scalar_lists(raw)
   expect_error(
-    rtemis::.list_to_Hyperparameters(list(
-      algorithm = "Ranger",
-      hyperparameters = collapsed
-    )),
+    rtemis::.list_to_Hyperparameters(c(list(algorithm = "Ranger"), collapsed)),
     "hyperparameter takes one"
   )
 })
@@ -329,31 +326,8 @@ test_that("algorithm.describe requires a name", {
   expect_equal(resp[["error"]][["code"]], "invalid_params")
 })
 
-test_that("resampler.describe returns the setup_Resampler schema with choices", {
-  server <- make_server()
-  conn <- authed_conn(server)
-  resp <- dispatch_request(
-    conn,
-    make_request("resampler.describe"),
-    server
-  )
-  expect_true(resp[["ok"]])
-  params <- resp[["result"]][["parameters"]]
-  expect_true(is.list(params))
-  expect_gt(length(params), 0L)
-  by_name <- setNames(params, vapply(params, `[[`, character(1L), "name"))
-  # type is an enum; choices preserved, first value as default
-  expect_true("choices" %in% names(by_name[["type"]]))
-  expect_true("KFold" %in% by_name[["type"]][["choices"]])
-  expect_equal(by_name[["type"]][["default"]], "KFold")
-  # n_resamples is integer, default 10L, not tunable
-  expect_equal(by_name[["n_resamples"]][["type"]], "integer")
-  expect_equal(by_name[["n_resamples"]][["default"]], 10L)
-  expect_false(by_name[["n_resamples"]][["tunable"]])
-})
 
-
-test_that("preprocessor.describe returns the setup_Preprocessor schema", {
+test_that("preprocessor.describe returns the setup_SupervisedPreprocessor schema", {
   server <- make_server()
   conn <- authed_conn(server)
   resp <- dispatch_request(
@@ -370,9 +344,21 @@ test_that("preprocessor.describe returns the setup_Preprocessor schema", {
   expect_true("choices" %in% names(by_name[["impute_type"]]))
   expect_true("missRanger" %in% by_name[["impute_type"]][["choices"]])
   expect_equal(by_name[["impute_type"]][["default"]], "missRanger")
-  # complete_cases is a logical flag, default FALSE
-  expect_equal(by_name[["complete_cases"]][["type"]], "logical")
-  expect_false(by_name[["complete_cases"]][["default"]])
+  # The four operations a fitted preprocessor cannot perform are absent, not
+  # merely defaulted off: `train()` takes a `SupervisedPreprocessorConfig`,
+  # which has no property for them, so offering one here would describe a
+  # setting whose submission is rejected.
+  for (dropped in c(
+    "complete_cases",
+    "remove_duplicates",
+    "remove_cases_thres",
+    "remove_features_thres"
+  )) {
+    expect_false(dropped %in% names(by_name), info = dropped)
+  }
+  # `remove_constants` stays: a zero-variance column is a requirement of
+  # fitting rather than a cleaning decision.
+  expect_equal(by_name[["remove_constants"]][["type"]], "logical")
   # `center = scale` resolves to scale's own default rather than the
   # `scale` function — a concrete FALSE logical.
   expect_equal(by_name[["center"]][["type"]], "logical")

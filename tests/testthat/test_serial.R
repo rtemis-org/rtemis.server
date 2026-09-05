@@ -144,9 +144,8 @@ test_that("roc_table emits an aggregate plus one curve per resample", {
   fit <- rtemis::train(
     dt,
     hyperparameters = rtemis::setup_GLM(),
-    outer_resampling_config = rtemis::setup_Resampler(
+    outer_resampling_config = rtemis::setup_KFold(
       n_resamples = 3L,
-      type = "KFold",
       seed = 1L
     ),
     verbosity = 0L

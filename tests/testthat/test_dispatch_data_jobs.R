@@ -382,7 +382,7 @@ test_that("train + job.list + job.status + job.result happy path (GLM regression
     server
   )
   expect_true(result[["ok"]])
-  expect_equal(result[["result"]][[".class"]], "Regression")
+  expect_equal(result[["result"]][["type"]], "Regression")
   expect_equal(result[["result"]][["algorithm"]], "GLM")
 })
 
@@ -720,6 +720,411 @@ test_that("job.save on an unresolved job -> invalid_params", {
 })
 
 
+# job.load --------------------------------------------------------------
+
+#' A real, resolved GLM regression job's result, for job.load fixtures.
+#' Trained rather than hand-built: job.load's own validation is that the
+#' object satisfies everything the downstream slices expect, which a fixture
+#' assembled by hand could get subtly wrong in the one place that matters.
+train_glm_result <- function(conn, server) {
+  set.seed(2026L)
+  dt <- data.table(a = rnorm(60), b = rnorm(60), y = NA_real_)
+  dt[, y := a + 0.5 * b + rnorm(60)]
+  upload <- dispatch_request(
+    conn,
+    make_request(
+      "data.upload",
+      params = list(name = "small"),
+      payload = ipc_bytes(dt)
+    ),
+    server
+  )
+  handle <- upload[["result"]][["data_handle"]]
+  submitted <- dispatch_request(
+    conn,
+    make_request(
+      "train",
+      params = list(data_handle = handle, algorithm = "GLM")
+    ),
+    server
+  )
+  job_id <- submitted[["result"]][["job_id"]]
+  s <- connection_session(conn)
+  job <- get_job(s, job_id)
+  wait_for_resolved(job)
+  check_job_resolved(job)
+  job[["result"]]
+}
+
+rds_bytes <- function(object) {
+  tmp <- tempfile(fileext = ".rds")
+  on.exit(unlink(tmp), add = TRUE)
+  saveRDS(object, tmp)
+  readBin(tmp, "raw", n = file.size(tmp))
+}
+
+test_that("job.load registers an uploaded Supervised result as a complete job", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  server <- make_server()
+  conn <- authed_conn(server, attach_session = "s")
+
+  trained <- train_glm_result(conn, server)
+
+  resp <- dispatch_request(
+    conn,
+    make_request("job.load", payload = rds_bytes(trained)),
+    server
+  )
+  expect_true(resp[["ok"]])
+  job_id <- resp[["result"]][["job_id"]]
+  expect_match(job_id, "^job-")
+  expect_equal(resp[["result"]][["status"]], "complete")
+  expect_equal(resp[["result"]][["type"]], "train")
+
+  # Every other job.* RPC serves it exactly as a trained job -- the whole
+  # point of registering it rather than answering job.result specially.
+  status <- dispatch_request(
+    conn,
+    make_request("job.status", params = list(job_id = job_id)),
+    server
+  )
+  expect_true(status[["ok"]])
+  expect_equal(status[["result"]][["status"]], "complete")
+
+  result <- dispatch_request(
+    conn,
+    make_request("job.result", params = list(job_id = job_id)),
+    server
+  )
+  expect_true(result[["ok"]])
+  expect_equal(result[["result"]][["type"]], "Regression")
+  expect_equal(result[["result"]][["algorithm"]], "GLM")
+
+  listed <- dispatch_request(conn, make_request("job.list"), server)
+  ids <- vapply(listed[["result"]][["jobs"]], `[[`, character(1L), "job_id")
+  expect_true(job_id %in% ids)
+})
+
+test_that("job.load's timing comes from the model's own session, not upload time", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  server <- make_server()
+  conn <- authed_conn(server, attach_session = "s")
+
+  trained <- train_glm_result(conn, server)
+  obs_session <- prop(trained, "session")
+  skip_if(
+    is.null(obs_session),
+    "fitted result carries no observability session"
+  )
+  run_started <- prop(obs_session, "started")
+  run_finished <- prop(obs_session, "finished")
+  skip_if(
+    is.null(run_started) || is.null(run_finished),
+    "session recorded no wall-clock bounds"
+  )
+
+  loaded <- dispatch_request(
+    conn,
+    make_request("job.load", payload = rds_bytes(trained)),
+    server
+  )
+  job_id <- loaded[["result"]][["job_id"]]
+  s <- connection_session(conn)
+  job <- get_job(s, job_id)
+
+  expect_equal(job[["started_at"]], run_started)
+  expect_equal(job[["completed_at"]], run_finished)
+  # Not "now": the original run predates this test's job.load call.
+  expect_true(job[["completed_at"]] < Sys.time())
+})
+
+test_that("job.load round-trips through job.save", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  server <- make_server()
+  conn <- authed_conn(server, attach_session = "s")
+  trained <- train_glm_result(conn, server)
+
+  loaded <- dispatch_request(
+    conn,
+    make_request("job.load", payload = rds_bytes(trained)),
+    server
+  )
+  job_id <- loaded[["result"]][["job_id"]]
+
+  dir <- file.path(tempdir(), basename(tempfile("loadtest_")))
+  on.exit(unlink(dir, recursive = TRUE), add = TRUE)
+  saved <- dispatch_request(
+    conn,
+    make_request("job.save", params = list(job_id = job_id, dir = dir)),
+    server
+  )
+  expect_true(saved[["ok"]])
+  # "train_..." from job.load's own type, not a distinct upload label.
+  expect_match(basename(saved[["result"]][["path"]]), "^train_.*\\.rds$")
+  expect_s3_class(readRDS(saved[["result"]][["path"]]), "rtemis::Supervised")
+})
+
+test_that("job.load requires a payload", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  server <- make_server()
+  conn <- authed_conn(server, attach_session = "s")
+  resp <- dispatch_request(conn, make_request("job.load"), server)
+  expect_false(resp[["ok"]])
+  expect_equal(resp[["error"]][["code"]], "invalid_params")
+})
+
+test_that("job.load rejects bytes that are not a readable .rds file", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  server <- make_server()
+  conn <- authed_conn(server, attach_session = "s")
+  resp <- dispatch_request(
+    conn,
+    make_request("job.load", payload = as.raw(c(0x00, 0x01, 0x02, 0xff))),
+    server
+  )
+  expect_false(resp[["ok"]])
+  expect_equal(resp[["error"]][["code"]], "invalid_params")
+})
+
+test_that("job.load rejects a valid .rds that is not a Supervised object", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  server <- make_server()
+  conn <- authed_conn(server, attach_session = "s")
+  resp <- dispatch_request(
+    conn,
+    make_request("job.load", payload = rds_bytes(list(answer = 42L))),
+    server
+  )
+  expect_false(resp[["ok"]])
+  expect_equal(resp[["error"]][["code"]], "invalid_params")
+  expect_match(resp[["error"]][["message"]], "Supervised")
+})
+
+#' A resampled (`SupervisedRes`) fit, trained directly rather than through
+#' the wire's single-fit `train` RPC -- `outer_resampling_config` is what
+#' turns a `train()` outcome into a `SupervisedRes`, and every downstream
+#' slice in `serial.R` already accepts this shape alongside a plain
+#' `Supervised` fit, so `job.load` should too.
+train_glm_res_result <- function() {
+  skip_if_not_installed("rtemis")
+  set.seed(2026L)
+  dt <- data.table(a = rnorm(60), b = rnorm(60), y = NA_real_)
+  dt[, y := a + 0.5 * b + rnorm(60)]
+  rtemis::train(
+    dt,
+    hyperparameters = rtemis::setup_GLM(),
+    outer_resampling_config = rtemis::setup_KFold(n_resamples = 3L, seed = 1L),
+    verbosity = 0L
+  )
+}
+
+test_that("job.load registers an uploaded SupervisedRes result as a complete job", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  server <- make_server()
+  conn <- authed_conn(server, attach_session = "s")
+
+  fit <- train_glm_res_result()
+  expect_true(inherits(fit, "rtemis::SupervisedRes"))
+
+  resp <- dispatch_request(
+    conn,
+    make_request("job.load", payload = rds_bytes(fit)),
+    server
+  )
+  expect_true(resp[["ok"]])
+  job_id <- resp[["result"]][["job_id"]]
+  expect_equal(resp[["result"]][["status"]], "complete")
+
+  result <- dispatch_request(
+    conn,
+    make_request("job.result", params = list(job_id = job_id)),
+    server
+  )
+  expect_true(result[["ok"]])
+  expect_equal(result[["result"]][["algorithm"]], "GLM")
+})
+
+
+# job.load.begin / chunk / end / cancel --------------------------------------
+#
+# The single-shot job.load path closes the connection with code 1009
+# ("message too large") once a real fitted model exceeds a WebSocket frame --
+# observed against an actual .rds saved from R, not just a hypothesis. These
+# exercise the chunked alternative a client falls back to.
+
+test_that("job.load.begin / chunk / end registers a chunked upload as a job", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  server <- make_server()
+  conn <- authed_conn(server, attach_session = "s")
+  trained <- train_glm_result(conn, server)
+
+  full <- rds_bytes(trained)
+  n <- length(full)
+  c1 <- full[1L:floor(n / 2L)]
+  c2 <- full[(floor(n / 2L) + 1L):n]
+
+  begin <- dispatch_request(
+    conn,
+    make_request(
+      "job.load.begin",
+      params = list(name = "chunked-model", total_bytes = n, n_chunks = 2L)
+    ),
+    server
+  )
+  expect_true(begin[["ok"]])
+  uid <- begin[["result"]][["upload_id"]]
+
+  c1_resp <- dispatch_request(
+    conn,
+    make_request(
+      "job.load.chunk",
+      params = list(upload_id = uid, chunk_index = 1L),
+      payload = c1
+    ),
+    server
+  )
+  expect_true(c1_resp[["ok"]])
+  expect_equal(c1_resp[["result"]][["received_count"]], 1L)
+
+  c2_resp <- dispatch_request(
+    conn,
+    make_request(
+      "job.load.chunk",
+      params = list(upload_id = uid, chunk_index = 2L),
+      payload = c2
+    ),
+    server
+  )
+  expect_true(c2_resp[["ok"]])
+  expect_equal(c2_resp[["result"]][["received_count"]], 2L)
+  expect_equal(c2_resp[["result"]][["received_bytes"]], n)
+
+  end <- dispatch_request(
+    conn,
+    make_request("job.load.end", params = list(upload_id = uid)),
+    server
+  )
+  expect_true(end[["ok"]])
+  job_id <- end[["result"]][["job_id"]]
+  expect_match(job_id, "^job-")
+  expect_equal(end[["result"]][["status"]], "complete")
+  expect_equal(end[["result"]][["type"]], "train")
+
+  # Converges on the same finalization as the single-shot path -- served
+  # identically by job.result, exactly like every other job.load test.
+  result <- dispatch_request(
+    conn,
+    make_request("job.result", params = list(job_id = job_id)),
+    server
+  )
+  expect_true(result[["ok"]])
+  expect_equal(result[["result"]][["algorithm"]], "GLM")
+})
+
+test_that("job.load.end on an incomplete chunked upload -> invalid_params", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  server <- make_server()
+  conn <- authed_conn(server, attach_session = "s")
+
+  begin <- dispatch_request(
+    conn,
+    make_request(
+      "job.load.begin",
+      params = list(name = "chunked-model", total_bytes = 100L, n_chunks = 2L)
+    ),
+    server
+  )
+  uid <- begin[["result"]][["upload_id"]]
+
+  end <- dispatch_request(
+    conn,
+    make_request("job.load.end", params = list(upload_id = uid)),
+    server
+  )
+  expect_false(end[["ok"]])
+  expect_equal(end[["error"]][["code"]], "invalid_params")
+})
+
+test_that("job.load.end rejects a chunked upload that is not Supervised", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  server <- make_server()
+  conn <- authed_conn(server, attach_session = "s")
+
+  full <- rds_bytes(list(answer = 42L))
+  n <- length(full)
+  begin <- dispatch_request(
+    conn,
+    make_request(
+      "job.load.begin",
+      params = list(name = "not-a-model", total_bytes = n, n_chunks = 1L)
+    ),
+    server
+  )
+  uid <- begin[["result"]][["upload_id"]]
+  dispatch_request(
+    conn,
+    make_request(
+      "job.load.chunk",
+      params = list(upload_id = uid, chunk_index = 1L),
+      payload = full
+    ),
+    server
+  )
+  end <- dispatch_request(
+    conn,
+    make_request("job.load.end", params = list(upload_id = uid)),
+    server
+  )
+  expect_false(end[["ok"]])
+  expect_equal(end[["error"]][["code"]], "invalid_params")
+  expect_match(end[["error"]][["message"]], "Supervised")
+})
+
+test_that("job.load.cancel drops a pending chunked model upload", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  server <- make_server()
+  conn <- authed_conn(server, attach_session = "s")
+
+  begin <- dispatch_request(
+    conn,
+    make_request(
+      "job.load.begin",
+      params = list(name = "chunked-model", total_bytes = 100L, n_chunks = 2L)
+    ),
+    server
+  )
+  uid <- begin[["result"]][["upload_id"]]
+
+  cancelled <- dispatch_request(
+    conn,
+    make_request("job.load.cancel", params = list(upload_id = uid)),
+    server
+  )
+  expect_true(cancelled[["ok"]])
+  expect_true(cancelled[["result"]][["cancelled"]])
+
+  # Gone: job.load.end on the cancelled upload_id now fails not_found.
+  end <- dispatch_request(
+    conn,
+    make_request("job.load.end", params = list(upload_id = uid)),
+    server
+  )
+  expect_false(end[["ok"]])
+  expect_equal(end[["error"]][["code"]], "not_found")
+})
+
+
 # Method table coverage -----------------------------------------------------
 
 test_that("method table now exposes all wire methods", {
@@ -750,6 +1155,11 @@ test_that("method table now exposes all wire methods", {
     "job.result",
     "job.delete",
     "job.save",
+    "job.load",
+    "job.load.begin",
+    "job.load.chunk",
+    "job.load.end",
+    "job.load.cancel",
     "dialog.choose_dir"
   )
   expect_true(all(expected %in% names(.METHOD_TABLE)))

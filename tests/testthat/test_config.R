@@ -76,7 +76,7 @@ test_that("build_super_config builds a SuperConfigLive from the form wire shape"
     ),
     dt
   )
-  expect_true(inherits(cfg, "rtemis::SuperConfigLive"))
+  expect_true(inherits(cfg, "rtemis::SuperConfigTabular"))
   expect_equal(prop(prop(cfg, "hyperparameters"), "algorithm"), "GLM")
   expect_equal(
     prop(prop(cfg, "outer_resampling_config"), "n_resamples"),
@@ -123,7 +123,7 @@ test_that("transport keys are stripped before the config is built", {
 
 test_that("build_super_config accepts a canonical schema.rtemis.org config", {
   # The object rtemislive stores on a job snapshot and shows in the Config
-  # view: `$schema` markers, nested `{algorithm, hyperparameters}` with no
+  # view: `$schema` markers, the learner as `{algorithm, ...settings}` with no
   # top-level `algorithm`, and the same `n_resamples` spelling as the setup
   # formal. It must reach the same `SuperConfigLive`.
   dt <- data.table(a = rnorm(20), b = rnorm(20), y = rnorm(20))
@@ -131,10 +131,7 @@ test_that("build_super_config accepts a canonical schema.rtemis.org config", {
     list(
       `$schema` = "https://schema.rtemis.org/supervised/v1/schema.json",
       data_handle = "d1",
-      hyperparameters = list(
-        algorithm = "GLM",
-        hyperparameters = list(ifw = FALSE)
-      ),
+      hyperparameters = list(algorithm = "GLM", ifw = FALSE),
       preprocessor_config = list(
         `$schema` = "https://schema.rtemis.org/preprocessor/v1/schema.json",
         scale = TRUE,
@@ -144,15 +141,96 @@ test_that("build_super_config accepts a canonical schema.rtemis.org config", {
     ),
     dt
   )
-  expect_true(inherits(cfg, "rtemis::SuperConfigLive"))
+  expect_true(inherits(cfg, "rtemis::SuperConfigTabular"))
   expect_equal(
     prop(prop(cfg, "outer_resampling_config"), "n_resamples"),
     3L
   )
   expect_true(inherits(prop(cfg, "hyperparameters"), "rtemis::Hyperparameters"))
   expect_true(
-    inherits(prop(cfg, "preprocessor_config"), "rtemis::PreprocessorConfig")
+    inherits(
+      prop(cfg, "preprocessor_config"),
+      "rtemis::SupervisedPreprocessorConfig"
+    )
   )
+})
+
+
+test_that("build_super_config accepts a variants set as the learner", {
+  # `supervised/v1`'s second shape for `hyperparameters`: a union of named
+  # configurations of one algorithm, which names the algorithm inside each
+  # variant rather than at the top level. An agent building a plan reaches for
+  # it, and it used to be unrunnable -- the submitter had no top-level
+  # `algorithm` to send, and an empty string got as far as building the learner
+  # before failing on a name nobody wrote.
+  #
+  # `.nest_hyperparameters()` must leave the block alone here: folding an
+  # `algorithm` in is what would bury the variants.
+  dt <- data.table(a = rnorm(20), b = rnorm(20), y = rnorm(20))
+  cfg <- build_cfg(
+    list(
+      `$schema` = "https://schema.rtemis.org/supervised/v1/schema.json",
+      data_handle = "d1",
+      hyperparameters = list(
+        variants = list(
+          default = list(algorithm = "Ranger", num_trees = 500L)
+        )
+      ),
+      outer_resampling_config = list(type = "KFold", n_resamples = 3L)
+    ),
+    dt
+  )
+  hp <- prop(cfg, "hyperparameters")
+  expect_true(inherits(hp, "rtemis::HyperparametersSet"))
+  # The variant's name survives: it is what a tuner reports as the winner.
+  expect_equal(names(prop(hp, "members")), "default")
+  expect_equal(prop(hp, "algorithm"), "Ranger")
+})
+
+
+test_that("build_super_config accepts a config that names no learner", {
+  # The third valid form: `hyperparameters` is nullable in `supervised/v1` and
+  # `train()` has its own default, so a config naming no algorithm means
+  # "rtemis chooses" rather than "the caller forgot". The handler used to
+  # require one, which made this unsubmittable even though `train()` has always
+  # run it.
+  dt <- data.table(a = rnorm(20), b = rnorm(20), y = rnorm(20))
+  cfg <- build_cfg(
+    list(
+      data_handle = "d1",
+      outer_resampling_config = list(type = "KFold", n_resamples = 3L)
+    ),
+    dt
+  )
+  expect_true(inherits(cfg, "rtemis::SuperConfigTabular"))
+  expect_null(prop(cfg, "hyperparameters"))
+})
+
+
+test_that("a train frame needs only its data", {
+  # The handler's guard is `data_handle` alone. All three ways of naming a
+  # learner -- a top-level `algorithm`, a variants set, or nothing at all --
+  # reach rtemis, which is the layer that knows what each means. A misspelled
+  # key is caught downstream by the reconstructor, not here.
+  required <- function(params) !is.null(params[["data_handle"]])
+  expect_true(required(list(data_handle = "d1", algorithm = "Ranger")))
+  expect_true(required(list(data_handle = "d1")))
+  expect_false(required(list(algorithm = "Ranger")))
+})
+
+
+test_that("every SuperConfig property reaches setup_SuperConfigLive", {
+  # `build_super_config()` copies properties across generically, so a property
+  # added to `SuperConfig` with no live counterpart is otherwise caught only
+  # when a `train` frame arrives -- `do.call()` raises "unused argument" at the
+  # user, not here. Compare the two lists directly.
+  portable <- S7::prop_names(rtemis::setup_SuperConfig())
+  live <- names(formals(rtemis::setup_SuperConfigLive))
+  drops <- rtemis.server:::.PORTABLE_ONLY_PROPERTIES
+  expect_equal(setdiff(setdiff(portable, drops), live), character(0))
+  # The drop list names only real properties, so a rename cannot leave a stale
+  # entry silently dropping nothing.
+  expect_equal(setdiff(drops, portable), character(0))
 })
 
 
@@ -204,10 +282,17 @@ test_that(".live_build_schema surfaces choices for scalar-default enum args", {
 
 
 test_that(".live_build_schema still reads `match.arg`-style formals", {
-  # `resampler.describe` has no single object to read (`type` selects the
-  # subclass), so the `c("a", "b", ...)` formal remains the fallback.
+  # No shipped `setup_*` uses the bare `c("a", "b", ...)` formal idiom any
+  # longer (`setup_Resampler(type = )` was the last one, split into
+  # `setup_KFold()`/`setup_StratSub()`/etc., each with no such formal) --
+  # but a dispatcher with no single object to read against, whose `type`
+  # selects the subclass, is a shape `.live_build_schema` must still handle.
+  # Exercised here with a local stand-in rather than real production code.
+  synthetic_dispatcher <- function(type = c("KFold", "StratSub"), n = 10L) {
+    NULL
+  }
   by_name <- function(x) setNames(x, vapply(x, `[[`, character(1L), "name"))
-  schema <- by_name(rtemis.server:::.live_build_schema(rtemis::setup_Resampler))
+  schema <- by_name(rtemis.server:::.live_build_schema(synthetic_dispatcher))
   expect_true("KFold" %in% unlist(schema[["type"]][["choices"]]))
   expect_equal(schema[["type"]][["default"]], "KFold")
 })

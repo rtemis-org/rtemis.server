@@ -241,6 +241,18 @@ dispatch_request <- function(conn, frame, server) {
     rtemislive_invalid_params = function(e) {
       make_error(req_id, "invalid_params", conditionMessage(e))
     },
+    # The only arm carrying structured data. A refused run has findings to
+    # report -- each with a code, plain-language text, evidence and where one
+    # exists a patch that fixes it -- and a caller made to parse them back out
+    # of a sentence cannot act on them.
+    rtemislive_invalid_config = function(e) {
+      make_error(
+        req_id,
+        "invalid_config",
+        conditionMessage(e),
+        details = list(diagnostics = e[["diagnostics"]])
+      )
+    },
     rtemislive_not_found = function(e) {
       make_error(req_id, "not_found", conditionMessage(e))
     },
@@ -425,16 +437,16 @@ handle_algorithms <- function(conn, frame, server) {
   }
   .require_cols(
     tbl,
-    c("name", "description", "class", "reg", "surv"),
+    c("name", "description", "classification", "regression", "survival"),
     "supervised_algorithms"
   )
   algorithms <- lapply(seq_len(nrow(tbl)), function(i) {
     list(
       name = as.character(tbl[i, "name"]),
       description = as.character(tbl[i, "description"]),
-      supports_classification = isTRUE(as.logical(tbl[i, "class"])),
-      supports_regression = isTRUE(as.logical(tbl[i, "reg"])),
-      supports_survival = isTRUE(as.logical(tbl[i, "surv"]))
+      supports_classification = isTRUE(as.logical(tbl[i, "classification"])),
+      supports_regression = isTRUE(as.logical(tbl[i, "regression"])),
+      supports_survival = isTRUE(as.logical(tbl[i, "survival"]))
     )
   })
   make_response(req_id, list(algorithms = algorithms))
@@ -552,9 +564,9 @@ prop_enums <- function(config) {
       error = function(e) NULL
     )
     # Enumerated choices come from the property, which is where rtemis declares
-    # and validates them; the `match.arg`-style `c("a", "b", ...)` formal is the
-    # fallback for schemas built without an object (`resampler.describe`, whose
-    # `type` selects the subclass and so has no single object to read).
+    # and validates them; the `match.arg`-style `c("a", "b", ...)` formal is
+    # the fallback for schemas built without an object -- a dispatcher whose
+    # `type` selects the subclass has no single object to read against.
     choices <- enums[[arg]] %||%
       if (is.character(default) && length(default) > 1L) as.list(default)
     # A multi-value default is the `match.arg` idiom: `setup_fn()` uses the
@@ -902,34 +914,20 @@ handle_cluster_algorithm_describe <- function(conn, frame, server) {
 }
 
 
-#' `resampler.describe` handler
-#'
-#' Returns the schema for `setup_Resampler()` so the client can render a
-#' resampler configuration form. Same shape as `algorithm.describe`
-#' but with no tunable flags - resampler parameters are fixed once
-#' chosen. The `type` arg surfaces its enumerated choices via the
-#' `choices` field.
-#'
-#' Wire response: `{ parameters: [{ name, type, default, tunable,
-#' choices? }, ...] }`.
-#'
-#' @author EDG
-#' @keywords internal
-#' @noRd
-handle_resampler_describe <- function(conn, frame, server) {
-  req_id <- frame[["header"]][["id"]] %||% NA_character_
-  parameters <- .live_build_schema(setup_Resampler)
-  make_response(req_id, list(parameters = parameters))
-}
-
-
 #' `preprocessor.describe` handler
 #'
-#' Returns the schema for `setup_Preprocessor()` so the client can render
-#' a preprocessing configuration form. Same shape and machinery as
-#' `resampler.describe`. `impute_missRanger_params` is a nested list with
+#' Returns the schema for `setup_SupervisedPreprocessor()` so the client can
+#' render a preprocessing configuration form. Same shape and machinery as
+#' `algorithm.describe`. `impute_missRanger_params` is a nested list with
 #' no scalar control, so it is omitted here and left to the server-side
 #' default; the matching `train` handler still accepts it.
+#'
+#' The supervised type, not `setup_Preprocessor()`. A preprocessor `train()`
+#' fits is replayed at predict time, so it cannot drop rows, and it cannot
+#' learn which columns to drop from a fold's own training subset -- four
+#' operations `SuperConfigLive` has no property for. Describing the wider type
+#' here would offer a client four settings whose submission `build_super_config()`
+#' rejects, and leave every consumer to re-derive which four.
 #'
 #' Wire response: `{ parameters: [{ name, type, default, tunable,
 #' choices? }, ...] }`.
@@ -942,9 +940,100 @@ handle_preprocessor_describe <- function(conn, frame, server) {
   skip <- "impute_missRanger_params"
   parameters <- Filter(
     function(p) !(p[["name"]] %in% skip),
-    .live_build_schema(setup_Preprocessor, config = setup_Preprocessor())
+    .live_build_schema(
+      setup_SupervisedPreprocessor,
+      config = setup_SupervisedPreprocessor()
+    )
   )
   make_response(req_id, list(parameters = parameters))
+}
+
+
+#' `config.validate` handler
+#'
+#' Validates one config -- against the published schema, and against a dataset
+#' when `data_handle` names one -- and returns what is wrong with it.
+#'
+#' Synchronous, unlike `train` / `decomp` / `cluster`. Validation is a
+#' millisecond of work on data already in this session, so routing it through
+#' the job store would buy nothing and cost the client a second round trip
+#' before it could show the user why their plan will not run.
+#'
+#' The whole check is `rtemis::validate_config()`. This handler translates the
+#' wire and nothing else, which is two things: the frame decodes with
+#' `simplifyVector = FALSE`, so JSON arrays arrive as lists of length-1 atomics
+#' (`.collapse_scalar_lists()`); and `schema_id` travels beside the config
+#' rather than inside it, so it is spliced back in as the `$schema` the config
+#' document declares. `.from_wire()` is deliberately not used: it translates the
+#' *flat* `train` params, and this method receives a schema-shaped document.
+#'
+#' Wire params:
+#'
+#' - `schema_id` - the config's schema URL, e.g.
+#'   `https://schema.rtemis.org/supervised/v1/schema.json`
+#' - `config` - the config document, as a JSON object
+#' - `data_handle` - optional; id of an uploaded dataset on this session.
+#'   Omitted, only the schema is checked.
+#' - `outcome` - optional; name of the outcome column. Omitted, rtemis's
+#'   convention applies and the last column is the outcome.
+#' - `step` - optional; this config's position in the plan, recorded on every
+#'   finding so a client can attribute it without tracking the request.
+#'
+#' Wire response: `{ diagnostics: [{ code, severity, step, message, plain,
+#' evidence, fix }, ...] }`, empty when the config is clean. A finding is a
+#' report rather than a failure, so a config with errors still answers `ok`.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+handle_config_validate <- function(conn, frame, server) {
+  req_id <- frame[["header"]][["id"]] %||% NA_character_
+  params <- frame[["header"]][["params"]] %||% list()
+
+  schema_id <- params[["schema_id"]]
+  config <- params[["config"]]
+  if (is.null(schema_id) || is.null(config)) {
+    rtemis.core::abort(
+      "`schema_id` and `config` are required.",
+      class = "rtemislive_invalid_params"
+    )
+  }
+  if (!is.list(config)) {
+    rtemis.core::abort(
+      "`config` must be a JSON object.",
+      class = "rtemislive_invalid_params"
+    )
+  }
+
+  data_dt <- NULL
+  if (!is.null(params[["data_handle"]])) {
+    data_dt <- get_data(connection_session(conn), params[["data_handle"]])
+  }
+
+  document <- .collapse_scalar_lists(config)
+  document[["$schema"]] <- schema_id
+
+  # An empty `outcome` is a client's "no selection" -- a select with nothing
+  # chosen -- and means unset, as an empty `positive_class` does in
+  # `.from_wire()`. Left as `""` it would be reported as a column that is not
+  # in the data, which is true but useless.
+  outcome <- params[["outcome"]]
+  if (is.character(outcome) && length(outcome) == 1L && !nzchar(outcome)) {
+    outcome <- NULL
+  }
+
+  diagnostics <- rtemis::validate_config(
+    config = document,
+    data = data_dt,
+    outcome = outcome,
+    step = params[["step"]]
+  )
+  # `to_json()` walks the published properties of each finding, so the wire
+  # shape follows `diagnostic/v1/schema.json` without being restated here.
+  make_response(
+    req_id,
+    list(diagnostics = rtemis::to_json(diagnostics)[["diagnostics"]])
+  )
 }
 
 
@@ -1298,17 +1387,37 @@ handle_data_delete <- function(conn, frame, server) {
 #'
 #' Wire params mirror `SuperConfig`'s properties one for one, so the block
 #' shapes are documented by the schemas at schema.rtemis.org rather than
-#' restated here. All optional except `data_handle` and `algorithm`:
+#' restated here. All optional except `data_handle`:
 #'
 #' - `data_handle` - id of a previously-uploaded dataset on this session
-#' - `algorithm` - character, see `algorithms` method
-#' - `hyperparameters` - flat `name -> value` map, or the nested
-#'   `{ algorithm, hyperparameters }` shape
+#' - `algorithm` - character, see `algorithms` method. Omit it when
+#'   `hyperparameters` is a variants set, which names the algorithm inside each
+#'   variant, or when no learner is being named at all and rtemis's default
+#'   should apply.
+#' - `hyperparameters` - flat `name -> value` map beside a top-level
+#'   `algorithm`, the config shape `{ algorithm, ...settings }` with the name
+#'   inside it, or the variants set `{ variants: { <name>: { algorithm,
+#'   ...settings } } }` -- the third is `supervised/v1`'s second form for the
+#'   block, and reaches `.list_to_HyperparametersSet()` untouched because
+#'   `.nest_hyperparameters()` only folds when a top-level `algorithm` is
+#'   present.
 #' - `preprocessor_config`, `decomposition_config`, `tuner_config`,
 #'   `outer_resampling_config`, `execution_config` - JSON objects
 #' - `weights` - character; column name in the dataset used as weights
 #' - `positive_class` - character; binary-classification positive class
 #' - `question` - character; user-provided label for the run
+#'
+#' The config is checked against the data before a job is created, and a run
+#' that cannot answer the question asked is refused rather than queued: an
+#' `invalid_config` error carrying the findings in `details`, in the shape
+#' `config.validate` returns them. A caller repairing a plan then never spends
+#' a job slot to learn what is wrong with it.
+#'
+#' Findings that do not stop the run travel with the accepted job as
+#' `diagnostics`, so a warning reaches the submitter instead of only the daemon
+#' log. `train()` checks a `SuperConfigLive` again on the other side -- that is
+#' the type's own guarantee rather than this handler's, and is what makes "no
+#' run reaches R unchecked" true of every submitter and not just this one.
 #'
 #' @author EDG
 #' @keywords internal
@@ -1318,10 +1427,22 @@ handle_train <- function(conn, frame, server) {
   params <- frame[["header"]][["params"]] %||% list()
 
   data_handle <- params[["data_handle"]]
-  algorithm <- params[["algorithm"]]
-  if (is.null(data_handle) || is.null(algorithm)) {
+  # Only the data is required. A config names its learner in one of three ways
+  # and all three are valid: a top-level `algorithm` with a flat map, a
+  # `hyperparameters` variants set that names the algorithm inside each member,
+  # or nothing at all -- `hyperparameters` is nullable in `supervised/v1` and
+  # `train()` has its own default, so "unset" means "rtemis chooses" exactly as
+  # it does for every other block.
+  #
+  # This handler used to require `algorithm`, which made two of the three
+  # unsubmittable: a caller holding a schema-valid config had nothing to put
+  # here, and one that sent an empty string to get past the check was refused
+  # much later by a message naming a learner nobody had written. Nothing is
+  # lost by dropping the check -- a misspelled key is caught by
+  # `.list_to_SuperConfig()`, which rejects anything it does not model.
+  if (is.null(data_handle)) {
     rtemis.core::abort(
-      "`data_handle` and `algorithm` are required.",
+      "`data_handle` is required.",
       class = "rtemislive_invalid_params"
     )
   }
@@ -1344,6 +1465,21 @@ handle_train <- function(conn, frame, server) {
     }
   )
 
+  # The gate. `validate_config()` reads a profile of the data rather than the
+  # rows, so this costs a fraction of a second at any size a browser uploaded,
+  # and it is the same call `train()` makes on the other side -- the answer here
+  # and the daemon's cannot differ.
+  diagnostics <- rtemis::validate_config(cfg, data = data_dt)
+  findings <- rtemis::to_json(diagnostics)[["diagnostics"]]
+  blocking <- Filter(function(d) identical(d[["severity"]], "error"), findings)
+  if (length(blocking) > 0L) {
+    rtemis.core::abort(
+      "Configuration cannot run on this data.",
+      class = "rtemislive_invalid_config",
+      data = list(diagnostics = findings)
+    )
+  }
+
   # No progress plumbing here: `train()` reports its nested progress through the
   # rtemis.core msg sink, which `ensure_daemon_sink()` has already installed on this
   # daemon. Each `progress_begin`/`update`/`end` ships an envelope carrying node ids,
@@ -1363,6 +1499,9 @@ handle_train <- function(conn, frame, server) {
   if (identical(job[["status"]], "queued")) {
     resp[["queue_position"]] <- job_queue_position(job)
   }
+  # Always present, empty when the config is clean: a caller reading
+  # `length()` should not have to tell an absent field from an empty one.
+  resp[["diagnostics"]] <- findings
   make_response(req_id, resp)
 }
 
@@ -1380,8 +1519,10 @@ handle_train <- function(conn, frame, server) {
 #' - `data_handle` - id of a previously-uploaded dataset on this session
 #' - `algorithm` - character, one of `<kind>.algorithms`
 #' - `hyperparameters` - flat `name -> value` map accepted by `setup_<Algo>()`.
-#'   A canonical `DecompositionConfig` / `ClusteringConfig` nests the same map
-#'   under `config`; both keys are read.
+#'   A canonical `DecompositionConfig` / `ClusteringConfig` carries the same
+#'   settings as siblings of `algorithm` rather than nested under a `config`
+#'   key, so a client projecting one onto the wire sends them here too. A
+#'   nested `config` key is not read.
 #' - `features` - character[]; subset of columns to use. Omitted = all columns.
 #' - `question` - character; user-provided label for the run
 #'
@@ -1419,10 +1560,11 @@ handle_unsupervised <- function(conn, frame, server, kind) {
   x <- subset_features(get_data(s, data_handle), params[["features"]])
 
   # The wire sends the form's flat name -> value map as `hyperparameters`; a
-  # canonical config nests the same map under `config`. `.drop_meta_keys()`
+  # canonical config carries the same map as siblings of `algorithm`, which
+  # the catalogue lookup above has already consumed. `.drop_meta_keys()`
   # strips `$`-prefixed document metadata (`$schema`) that a config lifted from
   # a schema.rtemis.org file carries; any other unknown key still errors.
-  hp <- params[["config"]] %||% params[["hyperparameters"]] %||% list()
+  hp <- params[["hyperparameters"]] %||% list()
   cfg <- tryCatch(
     do.call(
       # rtemis exports every `setup_<Algo>()`; `alg_name` came from the
@@ -1915,6 +2057,163 @@ handle_job_delete <- function(conn, frame, server) {
 }
 
 
+#' `job.load` handler
+#'
+#' The counterpart of `job.save`: register an uploaded `.rds` as a completed
+#' job, so every other job.* RPC serves it exactly as it would one this
+#' server trained itself. `job.result`/`job.save`/`job.status` only ever
+#' look at `job[["result"]]` and `job[["status"]]` -- nothing checks how the
+#' job env was built, which is what makes this a registration step rather
+#' than a parallel implementation of the slicing logic those already have.
+#' See `load_model_job()` for the read, validate, and register.
+#'
+#' Single-shot: the whole `.rds` in one frame. Large enough to exceed a
+#' WebSocket frame -- confirmed in practice, not just in principle -- and the
+#' connection closes with code 1009 before this handler ever runs; a client
+#' that cannot bound a model's size in advance should use `job.load.begin` /
+#' `.chunk` / `.end` instead, mirroring `data.upload`'s own two paths for the
+#' same reason.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+handle_job_load <- function(conn, frame, server) {
+  req_id <- frame[["header"]][["id"]] %||% NA_character_
+  payload <- frame[["payload"]]
+  if (is.null(payload) || !is.raw(payload) || length(payload) == 0L) {
+    rtemis.core::abort(
+      "An `.rds` payload is required for job.load.",
+      class = "rtemislive_invalid_params"
+    )
+  }
+  s <- connection_session(conn)
+  job <- load_model_job(s, payload)
+  make_response(req_id, job_summary(job))
+}
+
+
+#' `job.load.begin` handler
+#'
+#' The chunked counterpart of `job.load`, for a model whose serialized size
+#' exceeds a single WebSocket frame -- confirmed to bite in practice: an
+#' actual fitted `Supervised` object (as opposed to the small fixtures this
+#' package's own tests train) closed the connection with code 1009 ("message
+#' too large") on the single-shot path. Reuses `begin_upload` unchanged --
+#' chunk bookkeeping does not care what the bytes decode to.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+handle_job_load_begin <- function(conn, frame, server) {
+  req_id <- frame[["header"]][["id"]] %||% NA_character_
+  params <- frame[["header"]][["params"]] %||% list()
+  if (
+    is.null(params[["name"]]) ||
+      is.null(params[["total_bytes"]]) ||
+      is.null(params[["n_chunks"]])
+  ) {
+    rtemis.core::abort(
+      "`name`, `total_bytes`, and `n_chunks` are required.",
+      class = "rtemislive_invalid_params"
+    )
+  }
+  s <- connection_session(conn)
+  upload_id <- begin_upload(
+    s,
+    name = params[["name"]],
+    total_bytes = params[["total_bytes"]],
+    n_chunks = params[["n_chunks"]]
+  )
+  make_response(req_id, list(upload_id = upload_id))
+}
+
+
+#' `job.load.chunk` handler
+#'
+#' Requires the chunk bytes in the frame payload. Reuses `chunk_upload`
+#' unchanged, for `handle_job_load_begin`'s reason.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+handle_job_load_chunk <- function(conn, frame, server) {
+  req_id <- frame[["header"]][["id"]] %||% NA_character_
+  params <- frame[["header"]][["params"]] %||% list()
+  if (is.null(params[["upload_id"]]) || is.null(params[["chunk_index"]])) {
+    rtemis.core::abort(
+      "`upload_id` and `chunk_index` are required.",
+      class = "rtemislive_invalid_params"
+    )
+  }
+  payload <- frame[["payload"]]
+  if (is.null(payload) || !is.raw(payload)) {
+    rtemis.core::abort(
+      "Chunk payload is required.",
+      class = "rtemislive_invalid_params"
+    )
+  }
+  s <- connection_session(conn)
+  progress <- chunk_upload(
+    s,
+    upload_id = params[["upload_id"]],
+    chunk_index = params[["chunk_index"]],
+    bytes = payload
+  )
+  make_response(req_id, progress)
+}
+
+
+#' `job.load.end` handler
+#'
+#' Reassembles the chunks (`assemble_chunked_upload`, shared with
+#' `end_upload`) and finalizes into a job exactly as `handle_job_load` does
+#' for the single-shot path (`load_model_job`) -- the two ways of getting the
+#' bytes here converge on one finalization, so a rejection means the same
+#' thing whichever path a client used.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+handle_job_load_end <- function(conn, frame, server) {
+  req_id <- frame[["header"]][["id"]] %||% NA_character_
+  params <- frame[["header"]][["params"]] %||% list()
+  upload_id <- params[["upload_id"]]
+  if (is.null(upload_id)) {
+    rtemis.core::abort(
+      "`upload_id` is required.",
+      class = "rtemislive_invalid_params"
+    )
+  }
+  s <- connection_session(conn)
+  assembled <- assemble_chunked_upload(s, upload_id)
+  job <- load_model_job(s, assembled[["bytes"]])
+  make_response(req_id, job_summary(job))
+}
+
+
+#' `job.load.cancel` handler
+#'
+#' Reuses `cancel_upload` unchanged, for `handle_job_load_begin`'s reason.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+handle_job_load_cancel <- function(conn, frame, server) {
+  req_id <- frame[["header"]][["id"]] %||% NA_character_
+  params <- frame[["header"]][["params"]] %||% list()
+  upload_id <- params[["upload_id"]]
+  if (is.null(upload_id)) {
+    rtemis.core::abort(
+      "`upload_id` is required.",
+      class = "rtemislive_invalid_params"
+    )
+  }
+  s <- connection_session(conn)
+  cancelled <- cancel_upload(s, upload_id)
+  make_response(req_id, list(cancelled = cancelled))
+}
+
+
 #' `job.save` handler
 #'
 #' Serialize a completed job's full result object to an `.rds` file on the
@@ -2132,13 +2431,15 @@ handle_choose_dir <- function(conn, frame, server) {
     handler = handle_cluster_algorithm_describe,
     requires = "authed"
   ),
-  "resampler.describe" = list(
-    handler = handle_resampler_describe,
-    requires = "authed"
-  ),
   "preprocessor.describe" = list(
     handler = handle_preprocessor_describe,
     requires = "authed"
+  ),
+  # Attached, not merely authed: a `data_handle` is session-scoped, so the
+  # data half of validation has nowhere to resolve one without a session.
+  "config.validate" = list(
+    handler = handle_config_validate,
+    requires = c("authed", "attached")
   ),
   "session.list" = list(
     handler = handle_session_list,
@@ -2234,6 +2535,26 @@ handle_choose_dir <- function(conn, frame, server) {
   ),
   "job.save" = list(
     handler = handle_job_save,
+    requires = c("authed", "attached")
+  ),
+  "job.load" = list(
+    handler = handle_job_load,
+    requires = c("authed", "attached")
+  ),
+  "job.load.begin" = list(
+    handler = handle_job_load_begin,
+    requires = c("authed", "attached")
+  ),
+  "job.load.chunk" = list(
+    handler = handle_job_load_chunk,
+    requires = c("authed", "attached")
+  ),
+  "job.load.end" = list(
+    handler = handle_job_load_end,
+    requires = c("authed", "attached")
+  ),
+  "job.load.cancel" = list(
+    handler = handle_job_load_cancel,
     requires = c("authed", "attached")
   ),
   "dialog.choose_dir" = list(
