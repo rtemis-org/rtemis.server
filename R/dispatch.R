@@ -1519,8 +1519,10 @@ handle_train <- function(conn, frame, server) {
 #' - `data_handle` - id of a previously-uploaded dataset on this session
 #' - `algorithm` - character, one of `<kind>.algorithms`
 #' - `hyperparameters` - flat `name -> value` map accepted by `setup_<Algo>()`.
-#'   A canonical `DecompositionConfig` / `ClusteringConfig` nests the same map
-#'   under `config`; both keys are read.
+#'   A canonical `DecompositionConfig` / `ClusteringConfig` carries the same
+#'   settings as siblings of `algorithm` rather than nested under a `config`
+#'   key, so a client projecting one onto the wire sends them here too. A
+#'   nested `config` key is not read.
 #' - `features` - character[]; subset of columns to use. Omitted = all columns.
 #' - `question` - character; user-provided label for the run
 #'

@@ -9,7 +9,10 @@ rather than reconstructing the package's earlier history.
   not above a nested one.** `hyperparameters/v1` now carries an algorithm's
   settings as siblings of its name, so `.nest_hyperparameters()` produces
   `{algorithm, ...settings}`, which is exactly what rtemis's reader takes. A
-  variants set still passes through untouched.
+  variants set still passes through untouched. `decomp` and `cluster` follow
+  the same rule: a canonical `DecompositionConfig` / `ClusteringConfig` now
+  carries its settings beside `algorithm`, so the handlers read
+  `hyperparameters` only and no longer accept a nested `config` key.
 - **`job.load` registers a previously-saved model as a completed job — the
   counterpart of `job.save`.** A model trained in a bare R console (`saveRDS()`,
   or `train(..., outdir=)`), with no server or browser connection at all, had
