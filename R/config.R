@@ -119,7 +119,7 @@
 #' `algorithm.describe` schema publishes and what rtemislive's form emits. A
 #' `SuperConfig` names the algorithm once, inside `hyperparameters`, as the
 #' discriminator beside the settings -- `{"algorithm": "Ranger", "num_trees":
-#' 500}`, the shape `hyperparameters/v1` declares. Folding it here leaves
+#' 500}`, the shape `hyperparameters/r/v1` declares. Folding it here leaves
 #' rtemis's reconstructor with exactly one shape to accept.
 #'
 #' @param params Named list of wire params.

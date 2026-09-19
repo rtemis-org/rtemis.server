@@ -970,7 +970,7 @@ handle_preprocessor_describe <- function(conn, frame, server) {
 #' Wire params:
 #'
 #' - `schema_id` - the config's schema URL, e.g.
-#'   `https://schema.rtemis.org/supervised/v1/schema.json`
+#'   `https://schema.rtemis.org/supervised/r/v1/schema.json`
 #' - `config` - the config document, as a JSON object
 #' - `data_handle` - optional; id of an uploaded dataset on this session.
 #'   Omitted, only the schema is checked.
@@ -1397,7 +1397,7 @@ handle_data_delete <- function(conn, frame, server) {
 #' - `hyperparameters` - flat `name -> value` map beside a top-level
 #'   `algorithm`, the config shape `{ algorithm, ...settings }` with the name
 #'   inside it, or the variants set `{ variants: { <name>: { algorithm,
-#'   ...settings } } }` -- the third is `supervised/v1`'s second form for the
+#'   ...settings } } }` -- the third is `supervised/r/v1`'s second form for the
 #'   block, and reaches `.list_to_HyperparametersSet()` untouched because
 #'   `.nest_hyperparameters()` only folds when a top-level `algorithm` is
 #'   present.
@@ -1430,7 +1430,7 @@ handle_train <- function(conn, frame, server) {
   # Only the data is required. A config names its learner in one of three ways
   # and all three are valid: a top-level `algorithm` with a flat map, a
   # `hyperparameters` variants set that names the algorithm inside each member,
-  # or nothing at all -- `hyperparameters` is nullable in `supervised/v1` and
+  # or nothing at all -- `hyperparameters` is nullable in `supervised/r/v1` and
   # `train()` has its own default, so "unset" means "rtemis chooses" exactly as
   # it does for every other block.
   #

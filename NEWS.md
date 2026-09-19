@@ -5,6 +5,8 @@ rather than reconstructing the package's earlier history.
 
 ## 0.2.1
 
+- Schema validation examples and record expectations use language-qualified R paths.
+
 - **The wire's `algorithm` is folded in beside its flat hyperparameter map,
   not above a nested one.** `hyperparameters/v1` now carries an algorithm's
   settings as siblings of its name, so `.nest_hyperparameters()` produces

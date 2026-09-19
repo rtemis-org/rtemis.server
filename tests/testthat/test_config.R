@@ -129,7 +129,7 @@ test_that("build_super_config accepts a canonical schema.rtemis.org config", {
   dt <- data.table(a = rnorm(20), b = rnorm(20), y = rnorm(20))
   cfg <- build_cfg(
     list(
-      `$schema` = "https://schema.rtemis.org/supervised/v1/schema.json",
+      `$schema` = "https://schema.rtemis.org/supervised/r/v1/schema.json",
       data_handle = "d1",
       hyperparameters = list(algorithm = "GLM", ifw = FALSE),
       preprocessor_config = list(
@@ -157,7 +157,7 @@ test_that("build_super_config accepts a canonical schema.rtemis.org config", {
 
 
 test_that("build_super_config accepts a variants set as the learner", {
-  # `supervised/v1`'s second shape for `hyperparameters`: a union of named
+  # `supervised/r/v1`'s second shape for `hyperparameters`: a union of named
   # configurations of one algorithm, which names the algorithm inside each
   # variant rather than at the top level. An agent building a plan reaches for
   # it, and it used to be unrunnable -- the submitter had no top-level
@@ -169,7 +169,7 @@ test_that("build_super_config accepts a variants set as the learner", {
   dt <- data.table(a = rnorm(20), b = rnorm(20), y = rnorm(20))
   cfg <- build_cfg(
     list(
-      `$schema` = "https://schema.rtemis.org/supervised/v1/schema.json",
+      `$schema` = "https://schema.rtemis.org/supervised/r/v1/schema.json",
       data_handle = "d1",
       hyperparameters = list(
         variants = list(
@@ -183,13 +183,13 @@ test_that("build_super_config accepts a variants set as the learner", {
   hp <- prop(cfg, "hyperparameters")
   expect_true(inherits(hp, "rtemis::HyperparametersSet"))
   # The variant's name survives: it is what a tuner reports as the winner.
-  expect_equal(names(prop(hp, "members")), "default")
+  expect_equal(names(prop(hp, "variants")), "default")
   expect_equal(prop(hp, "algorithm"), "Ranger")
 })
 
 
 test_that("build_super_config accepts a config that names no learner", {
-  # The third valid form: `hyperparameters` is nullable in `supervised/v1` and
+  # The third valid form: `hyperparameters` is nullable in `supervised/r/v1` and
   # `train()` has its own default, so a config naming no algorithm means
   # "rtemis chooses" rather than "the caller forgot". The handler used to
   # require one, which made this unsubmittable even though `train()` has always
