@@ -1618,7 +1618,10 @@ unsupervised_kinds <- list(
     # settings nest (a criterion, an approximation) reads the same here as
     # from a file.
     read = function(alg_name, settings) {
-      rtemis::.list_to_DecompositionConfig(c(list(algorithm = alg_name), settings))
+      rtemis::.list_to_DecompositionConfig(c(
+        list(algorithm = alg_name),
+        settings
+      ))
     },
     expr = quote(
       rtemis::decomp(x, config = cfg, verbosity = 1L)
