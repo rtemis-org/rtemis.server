@@ -1566,10 +1566,8 @@ handle_unsupervised <- function(conn, frame, server, kind) {
   # a schema.rtemis.org file carries; any other unknown key still errors.
   hp <- params[["hyperparameters"]] %||% list()
   cfg <- tryCatch(
-    do.call(
-      # rtemis exports every `setup_<Algo>()`; `alg_name` came from the
-      # catalogue, so the lookup cannot miss.
-      getExportedValue("rtemis", paste0("setup_", alg_name)),
+    spec[["read"]](
+      alg_name,
       as.list(rtemis::.drop_meta_keys(.collapse_scalar_lists(hp)))
     ),
     error = function(e) {
@@ -1615,15 +1613,25 @@ unsupervised_kinds <- list(
   decomp = list(
     label = "decomposition",
     get_name = function(algorithm) get_decom_name(algorithm),
+    # The canonical wire reader, not `setup_<Algo>()` directly: it rebuilds an
+    # object-valued setting from the class declaration, so a config whose
+    # settings nest (a criterion, an approximation) reads the same here as
+    # from a file.
+    read = function(alg_name, settings) {
+      rtemis::.list_to_DecompositionConfig(c(list(algorithm = alg_name), settings))
+    },
     expr = quote(
-      rtemis::decomp(x, algorithm = alg_name, config = cfg, verbosity = 1L)
+      rtemis::decomp(x, config = cfg, verbosity = 1L)
     )
   ),
   cluster = list(
     label = "clustering",
     get_name = function(algorithm) get_clust_name(algorithm),
+    read = function(alg_name, settings) {
+      rtemis::.list_to_ClusteringConfig(c(list(algorithm = alg_name), settings))
+    },
     expr = quote(
-      rtemis::cluster(x, algorithm = alg_name, config = cfg, verbosity = 1L)
+      rtemis::cluster(x, config = cfg, verbosity = 1L)
     )
   )
 )

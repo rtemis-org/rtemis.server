@@ -5,6 +5,7 @@ rather than reconstructing the package's earlier history.
 
 ## 0.2.1
 
+- Decomposition and clustering jobs build their config through rtemis's wire readers, so a setting that is itself an object (PAMK's criterion, a spectral variant's Nystrom approximation) is read the same way as from a file; requires rtemis 1.4.1.
 - Schema validation examples and record expectations use language-qualified R paths.
 
 - **The wire's `algorithm` is folded in beside its flat hyperparameter map,
