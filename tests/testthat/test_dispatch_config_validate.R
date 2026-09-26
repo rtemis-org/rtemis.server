@@ -47,7 +47,7 @@ authed_conn <- function(server, attach_session = NULL) {
   conn
 }
 
-.schema_id <- "https://schema.rtemis.org/supervised/v1/schema.json"
+.schema_id <- "https://schema.rtemis.org/supervised/r/v1/schema.json"
 
 # The wire decodes with `simplifyVector = FALSE`, so a JSON array arrives as a
 # list of length-1 atomics. Fixtures are written that way on purpose: it is the

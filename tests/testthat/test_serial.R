@@ -576,7 +576,7 @@ test_that("job.result `record` returns the run record for a trained Regression",
   rec <- resp[["result"]]
   expect_equal(
     rec[["$schema"]],
-    "https://schema.rtemis.org/supervised/v1/record.json"
+    "https://schema.rtemis.org/supervised/r/v1/record.json"
   )
   # What the run did, beside what it was asked for.
   expect_true(all(

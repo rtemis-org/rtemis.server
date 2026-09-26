@@ -970,7 +970,7 @@ handle_preprocessor_describe <- function(conn, frame, server) {
 #' Wire params:
 #'
 #' - `schema_id` - the config's schema URL, e.g.
-#'   `https://schema.rtemis.org/supervised/v1/schema.json`
+#'   `https://schema.rtemis.org/supervised/r/v1/schema.json`
 #' - `config` - the config document, as a JSON object
 #' - `data_handle` - optional; id of an uploaded dataset on this session.
 #'   Omitted, only the schema is checked.
@@ -1397,7 +1397,7 @@ handle_data_delete <- function(conn, frame, server) {
 #' - `hyperparameters` - flat `name -> value` map beside a top-level
 #'   `algorithm`, the config shape `{ algorithm, ...settings }` with the name
 #'   inside it, or the variants set `{ variants: { <name>: { algorithm,
-#'   ...settings } } }` -- the third is `supervised/v1`'s second form for the
+#'   ...settings } } }` -- the third is `supervised/r/v1`'s second form for the
 #'   block, and reaches `.list_to_HyperparametersSet()` untouched because
 #'   `.nest_hyperparameters()` only folds when a top-level `algorithm` is
 #'   present.
@@ -1430,7 +1430,7 @@ handle_train <- function(conn, frame, server) {
   # Only the data is required. A config names its learner in one of three ways
   # and all three are valid: a top-level `algorithm` with a flat map, a
   # `hyperparameters` variants set that names the algorithm inside each member,
-  # or nothing at all -- `hyperparameters` is nullable in `supervised/v1` and
+  # or nothing at all -- `hyperparameters` is nullable in `supervised/r/v1` and
   # `train()` has its own default, so "unset" means "rtemis chooses" exactly as
   # it does for every other block.
   #
@@ -1566,10 +1566,8 @@ handle_unsupervised <- function(conn, frame, server, kind) {
   # a schema.rtemis.org file carries; any other unknown key still errors.
   hp <- params[["hyperparameters"]] %||% list()
   cfg <- tryCatch(
-    do.call(
-      # rtemis exports every `setup_<Algo>()`; `alg_name` came from the
-      # catalogue, so the lookup cannot miss.
-      getExportedValue("rtemis", paste0("setup_", alg_name)),
+    spec[["read"]](
+      alg_name,
       as.list(rtemis::.drop_meta_keys(.collapse_scalar_lists(hp)))
     ),
     error = function(e) {
@@ -1615,15 +1613,28 @@ unsupervised_kinds <- list(
   decomp = list(
     label = "decomposition",
     get_name = function(algorithm) get_decom_name(algorithm),
+    # The canonical wire reader, not `setup_<Algo>()` directly: it rebuilds an
+    # object-valued setting from the class declaration, so a config whose
+    # settings nest (a criterion, an approximation) reads the same here as
+    # from a file.
+    read = function(alg_name, settings) {
+      rtemis::.list_to_DecompositionConfig(c(
+        list(algorithm = alg_name),
+        settings
+      ))
+    },
     expr = quote(
-      rtemis::decomp(x, algorithm = alg_name, config = cfg, verbosity = 1L)
+      rtemis::decomp(x, config = cfg, verbosity = 1L)
     )
   ),
   cluster = list(
     label = "clustering",
     get_name = function(algorithm) get_clust_name(algorithm),
+    read = function(alg_name, settings) {
+      rtemis::.list_to_ClusteringConfig(c(list(algorithm = alg_name), settings))
+    },
     expr = quote(
-      rtemis::cluster(x, algorithm = alg_name, config = cfg, verbosity = 1L)
+      rtemis::cluster(x, config = cfg, verbosity = 1L)
     )
   )
 )
