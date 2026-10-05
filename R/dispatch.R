@@ -1800,6 +1800,9 @@ handle_job_cancel <- function(conn, frame, server) {
 #'   recorded session (non-supervised results, or models from older rtemis).
 #' - `metrics`: structured JSON for `metrics_training` /
 #'   `metrics_validation` / `metrics_test`.
+#' - `review`, `writeup`: `{markdown}`, the Markdown of `rtemis::review()` or
+#'   `rtemis::writeup()` of a supervised result, rendered by
+#'   `rtemis::to_markdown()`.
 #'
 #' @author EDG
 #' @keywords internal
@@ -1934,6 +1937,12 @@ handle_job_result <- function(conn, frame, server) {
       payload
     ))
   }
+  if (slice == "review" || slice == "writeup") {
+    return(make_response(
+      req_id,
+      list(markdown = report_markdown(result, slice))
+    ))
+  }
   if (slice == "metrics") {
     if (!inherits(result, "rtemis::Supervised")) {
       rtemis.core::abort(
@@ -2040,7 +2049,8 @@ handle_job_result <- function(conn, frame, server) {
       "Unsupported slice `",
       slice,
       "`. Use `summary`, `raw`, `record`, `varimp`, `predictions`, `roc`, ",
-      "`session`, `metrics`, `transformed`, `loadings`, or `assignments`."
+      "`session`, `metrics`, `review`, `writeup`, `transformed`, `loadings`, ",
+      "or `assignments`."
     ),
     class = "rtemislive_invalid_params"
   )

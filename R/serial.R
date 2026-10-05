@@ -366,15 +366,19 @@ roc_table <- function(sup, max_points = 1000L) {
 
 # %% Variable importance table ----------------------------------------------
 
-#' Extract the variable-importance table from a `Supervised`
+#' Variable importance table for the `varimp` slice
 #'
-#' Returns the underlying `data.table` from `VariableImportance` so it can
-#' either be JSON-serialized (small) or Arrow-encoded (large). `NULL`
-#' when the algorithm exposes no varimp.
+#' Combines the measures of each `VariableImportance` with
+#' [rtemis::varimp_table()]: one row per predictor and one numeric column per
+#' measure. For a `SupervisedRes`, the per-resample tables are stacked and a
+#' `fold` column, second after `variable`, names the resample, so the client
+#' renders one boxplot per predictor. Resamples without importance are
+#' skipped.
 #'
-#' @param sup `Supervised`.
+#' @param sup `Supervised` or `SupervisedRes`.
 #'
-#' @return data.table or NULL.
+#' @return data.table, or `NULL` when `sup` is not a supervised result or
+#'   reports no importance.
 #'
 #' @author EDG
 #' @keywords internal
@@ -384,56 +388,64 @@ varimp_table <- function(sup) {
   if (is.null(vi)) {
     return(NULL)
   }
-
-  vi_data <- function(x) {
-    if (inherits(x, "rtemis::VariableImportance")) {
-      prop(x, "data")
-    } else if (data.table::is.data.table(x) || is.data.frame(x)) {
-      data.table::as.data.table(x)
-    } else {
-      NULL
-    }
-  }
-
-  # Single Supervised: one VariableImportance.
   if (inherits(vi, "rtemis::VariableImportance")) {
-    return(vi_data(vi))
+    return(data.table::as.data.table(rtemis::varimp_table(vi)))
   }
 
-  # SupervisedRes: list of VariableImportance, one per fold. Combine
-  # into a long-by-fold table so the UI can render a boxplot. Fold
-  # names come from the list names when present, else integer indices.
-  if (is.list(vi)) {
-    fold_labels <- names(vi)
-    if (is.null(fold_labels) || any(!nzchar(fold_labels))) {
-      fold_labels <- as.character(seq_along(vi))
-    }
-    pieces <- list()
-    for (i in seq_along(vi)) {
-      dt <- vi_data(vi[[i]])
-      if (is.null(dt) || NROW(dt) == 0L) {
-        next
-      }
-      dt <- data.table::copy(dt)
-      dt[, let(fold = fold_labels[i])]
-      # Move `fold` to the second column for stable display order
-      # (`variable` stays first).
-      cols <- names(dt)
-      ordered <- c(
-        "variable",
-        "fold",
-        setdiff(cols, c("variable", "fold"))
-      )
-      data.table::setcolorder(dt, ordered)
-      pieces[[length(pieces) + 1L]] <- dt
-    }
-    if (length(pieces) == 0L) {
+  fold_labels <- names(vi)
+  if (is.null(fold_labels) || any(!nzchar(fold_labels))) {
+    fold_labels <- as.character(seq_along(vi))
+  }
+  pieces <- lapply(seq_along(vi), function(i) {
+    if (is.null(vi[[i]])) {
       return(NULL)
     }
-    return(data.table::rbindlist(pieces, use.names = TRUE, fill = TRUE))
+    dt <- data.table::as.data.table(rtemis::varimp_table(vi[[i]]))
+    dt[, let(fold = fold_labels[i])]
+    data.table::setcolorder(dt, c("variable", "fold"))
+  })
+  pieces <- Filter(Negate(is.null), pieces)
+  if (length(pieces) == 0L) {
+    return(NULL)
   }
+  data.table::rbindlist(pieces, use.names = TRUE, fill = TRUE)
+}
 
-  NULL
+
+# %% Report Markdown ---------------------------------------------------------
+
+#' Markdown of a supervised result's review or writeup
+#'
+#' Renders `rtemis::review()` or `rtemis::writeup()` of `sup` with
+#' `rtemis::to_markdown()`. Top-level sections are `##` headings.
+#'
+#' @param sup `Supervised` or `SupervisedRes`.
+#' @param report Character: `"review"` or `"writeup"`.
+#'
+#' @return Character scalar.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+report_markdown <- function(sup, report = c("review", "writeup")) {
+  report <- match.arg(report)
+  if (
+    !inherits(sup, "rtemis::Supervised") &&
+      !inherits(sup, "rtemis::SupervisedRes")
+  ) {
+    rtemis.core::abort(
+      "`",
+      report,
+      "` slice requires a `Supervised` or `SupervisedRes` result.",
+      class = "rtemislive_invalid_params"
+    )
+  }
+  x <- switch(
+    report,
+    review = rtemis::review(sup),
+    writeup = rtemis::writeup(sup)
+  )
+  rtemis::to_markdown(x)
 }
 
 
