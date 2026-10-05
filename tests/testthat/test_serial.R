@@ -119,6 +119,35 @@ test_that("varimp_table returns NULL on non-Supervised", {
   expect_null(varimp_table(1L))
 })
 
+test_that("varimp_table returns one column per measure for a Supervised", {
+  mod <- rtemis::train(
+    iris[, 1:4],
+    hyperparameters = rtemis::setup_GLM(),
+    verbosity = 0L
+  )
+  vi <- varimp_table(mod)
+  expect_true(data.table::is.data.table(vi))
+  expect_equal(names(vi), c("variable", "Coefficient"))
+  expect_setequal(
+    vi[["variable"]],
+    c("(Intercept)", "Sepal.Length", "Sepal.Width", "Petal.Length")
+  )
+  expect_true(is.numeric(vi[["Coefficient"]]))
+})
+
+test_that("varimp_table stacks resamples with a fold column for a SupervisedRes", {
+  mod <- rtemis::train(
+    iris[, 1:4],
+    hyperparameters = rtemis::setup_GLM(),
+    outer_resampling_config = rtemis::setup_KFold(n_resamples = 3L),
+    verbosity = 0L
+  )
+  vi <- varimp_table(mod)
+  expect_equal(names(vi)[1:2], c("variable", "fold"))
+  expect_setequal(unique(vi[["fold"]]), c("Fold_1", "Fold_2", "Fold_3"))
+  expect_equal(NROW(vi), 3L * 4L)
+})
+
 
 # roc_table -----------------------------------------------------------------
 
@@ -400,15 +429,14 @@ test_that("job.result `varimp` returns JSON (no payload) for a trained Supervise
   result <- resp[["header"]][["result"]]
   expect_equal(result[["format"]], "arrow-ipc")
   expect_true("columns" %in% names(result))
-  # Most GLMs expose a varimp table; if so the payload decodes to a
-  # data.table with the named columns. Empty varimp (rows == 0) is also
-  # acceptable for algorithms without varimp.
-  if (result[["rows"]] > 0L) {
-    expect_true(is.raw(resp[["payload"]]))
-    back <- decode_arrow_ipc(resp[["payload"]])
-    expect_equal(ncol(back), result[["cols"]])
-    expect_true(all(result[["columns"]] %in% names(back)))
-  }
+  # GLM reports its coefficients: the payload decodes to a table with a
+  # `variable` column and one column per measure.
+  expect_gt(result[["rows"]], 0L)
+  expect_true(is.raw(resp[["payload"]]))
+  back <- decode_arrow_ipc(resp[["payload"]])
+  expect_equal(ncol(back), result[["cols"]])
+  expect_true(all(result[["columns"]] %in% names(back)))
+  expect_equal(names(back)[1], "variable")
 })
 
 # session_table --------------------------------------------------------------

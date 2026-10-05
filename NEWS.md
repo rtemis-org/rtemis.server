@@ -7,6 +7,7 @@ rather than reconstructing the package's earlier history.
 
 - Decomposition and clustering jobs build their config through rtemis's wire readers, so a setting that is itself an object (PAMK's criterion, a spectral variant's Nystrom approximation) is read the same way as from a file; requires rtemis 1.4.1.
 - Schema validation examples and record expectations use language-qualified R paths.
+- The `varimp` slice builds its table with `rtemis::varimp_table()`: one row per predictor and one column per importance measure, with a `fold` column for a resampled fit; requires rtemis 1.4.2.
 
 - **The wire's `algorithm` is folded in beside its flat hyperparameter map,
   not above a nested one.** `hyperparameters/v1` now carries an algorithm's
