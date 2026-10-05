@@ -412,6 +412,43 @@ varimp_table <- function(sup) {
 }
 
 
+# %% Report Markdown ---------------------------------------------------------
+
+#' Markdown of a supervised result's review or writeup
+#'
+#' Renders `rtemis::review()` or `rtemis::writeup()` of `sup` with
+#' `rtemis::to_markdown()`. Top-level sections are `##` headings.
+#'
+#' @param sup `Supervised` or `SupervisedRes`.
+#' @param report Character: `"review"` or `"writeup"`.
+#'
+#' @return Character scalar.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+report_markdown <- function(sup, report = c("review", "writeup")) {
+  report <- match.arg(report)
+  if (
+    !inherits(sup, "rtemis::Supervised") &&
+      !inherits(sup, "rtemis::SupervisedRes")
+  ) {
+    rtemis.core::abort(
+      "`",
+      report,
+      "` slice requires a `Supervised` or `SupervisedRes` result.",
+      class = "rtemislive_invalid_params"
+    )
+  }
+  x <- switch(
+    report,
+    review = rtemis::review(sup),
+    writeup = rtemis::writeup(sup)
+  )
+  rtemis::to_markdown(x)
+}
+
+
 # %% Session timeline table --------------------------------------------------
 
 #' Execution timeline table for the `session` slice

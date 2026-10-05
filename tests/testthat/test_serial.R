@@ -439,6 +439,32 @@ test_that("job.result `varimp` returns JSON (no payload) for a trained Supervise
   expect_equal(names(back)[1], "variable")
 })
 
+# report_markdown ------------------------------------------------------------
+
+test_that("report_markdown errors with invalid_params on non-Supervised", {
+  expect_error(
+    report_markdown(1L, "review"),
+    class = "rtemislive_invalid_params"
+  )
+})
+
+test_that("report_markdown renders the review and writeup of a Supervised", {
+  idx <- c(1:40, 51:90, 101:140)
+  mod <- rtemis::train(
+    iris[idx, ],
+    dat_test = iris[-idx, ],
+    hyperparameters = rtemis::setup_CART(),
+    verbosity = 0L
+  )
+  review_md <- report_markdown(mod, "review")
+  expect_true(is.character(review_md) && length(review_md) == 1L)
+  expect_match(review_md, "## Findings", fixed = TRUE)
+  writeup_md <- report_markdown(mod, "writeup")
+  expect_match(writeup_md, "## Methods", fixed = TRUE)
+  expect_match(writeup_md, "## Results", fixed = TRUE)
+})
+
+
 # session_table --------------------------------------------------------------
 
 test_that("session_table returns NULL on non-Supervised", {
