@@ -53,9 +53,9 @@ new_job_id <- function() {
 #'
 #' Wraps `expr` in a task that:
 #'
-#' 1. Tags the daemon's `rtemis::live` with the new `job_id` (so the
-#'    daemon-side `msg()` sink can attach it to forwarded messages).
-#' 2. Restores the previous tag on exit.
+#' 1. Sets the daemon's job id to `job_id` with `.set_job_id()`, so the
+#'    daemon-side `msg()` sink can attach it to forwarded messages.
+#' 2. Restores the previous job id on exit.
 #' 3. Evaluates `expr`.
 #'
 #' Variables referenced from inside `expr` must be supplied via `env` - a
@@ -102,34 +102,14 @@ submit_job <- function(
 
   job_id <- new_job_id()
 
-  # Wrap the user expression so the daemon stamps `rtemislive_job_id` into
-  # rtemis's internal `live` env for the duration of the task. The
-  # daemon-side `msg()` sink reads from there to tag forwarded messages.
-  #
-  # Two subtleties:
-  #
-  # 1. `live` is not an exported name, so `rtemis::live` fails. We reach
-  #    it via `asNamespace("rtemis")$live`.
-  # 2. We bind the env to a local variable (`live_env`) before mutating
-  #    it. Writing `ns$live$x <- v` is parsed as a rebinding of `live`
-  #    in `ns`, which fails because installed-package namespaces are
-  #    locked. Mutating the env's *contents* via a local reference
-  #    sidesteps the lock.
+  # The wrapped expression runs on a daemon. It installs the msg sink and
+  # push socket on first use (see `init_daemon_progress()`), then sets the
+  # job id for the duration of the task; the daemon-side `msg()` sink reads
+  # it to tag forwarded messages.
   wrapped <- bquote({
-    # Lazily install the msg sink + push socket on this daemon if not
-    # already done. Required because `mirai::everywhere` (used at
-    # serve() startup) cannot persist writes into rtemis's namespace
-    # env - see init_daemon_progress for the full rationale.
-    rtemis.server::ensure_daemon_sink()
-    live_env <- asNamespace("rtemis")$live
-    prev <- live_env$rtemislive_job_id
-    live_env$rtemislive_job_id <- .(job_id)
-    on.exit(
-      {
-        live_env$rtemislive_job_id <- prev
-      },
-      add = TRUE
-    )
+    rtemis.server::.ensure_daemon_sink()
+    prev <- rtemis.server::.set_job_id(.(job_id))
+    on.exit(rtemis.server::.set_job_id(prev), add = TRUE)
     .(expr)
   })
 

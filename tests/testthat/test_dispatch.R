@@ -228,11 +228,10 @@ test_that(".collapse_scalar_lists unwraps scalar lists into atomic vectors", {
   expect_equal(fn(42L), 42L)
 })
 
-test_that(".collapse_scalar_lists output drives rtemis tuning detection", {
+test_that(".collapse_scalar_lists output rebuilds an rtemis search space", {
   # End-to-end shape check: a search space is *tagged* on the wire
   # (`{"candidates": [...]}`), so the collapse must leave the tag intact for
-  # `.list_to_Hyperparameters()` to rebuild it and `needs_tuning` to see it.
-  needs_tuning <- getFromNamespace("needs_tuning", "rtemis")
+  # `.list_to_Hyperparameters()` to rebuild it as candidates.
   raw <- jsonlite::fromJSON(
     '{"num_trees": {"candidates": [100, 500, 1000]}}',
     simplifyVector = FALSE
@@ -245,7 +244,7 @@ test_that(".collapse_scalar_lists output drives rtemis tuning detection", {
     collapsed
   ))
   expect_true(inherits(hp, "rtemis::Hyperparameters"))
-  expect_true(needs_tuning(hp))
+  expect_true(S7::S7_inherits(hp@num_trees, rtemis::HyperparameterCandidates))
   expect_equal(unlist(hp@num_trees@candidates), c(100L, 500L, 1000L))
 })
 
@@ -343,7 +342,7 @@ test_that("preprocessor.describe returns the setup_SupervisedPreprocessor schema
   # impute_type is an enum; choices preserved, first value as default
   expect_true("choices" %in% names(by_name[["impute_type"]]))
   expect_true("missRanger" %in% by_name[["impute_type"]][["choices"]])
-  expect_equal(by_name[["impute_type"]][["default"]], "missRanger")
+  expect_equal(by_name[["impute_type"]][["default"]], "meanMode")
   # The four operations a fitted preprocessor cannot perform are absent, not
   # merely defaulted off: `train()` takes a `SupervisedPreprocessorConfig`,
   # which has no property for them, so offering one here would describe a

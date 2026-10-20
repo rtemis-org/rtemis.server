@@ -392,7 +392,7 @@ daemon_count <- function() {
 }
 
 
-#' Assert a rtemis catalogue table has the columns we index by name
+#' Assert that an rtemis catalog table has the columns indexed by name
 #'
 #' `[.data.frame` returns `character(0)` for a missing column rather than
 #' erroring, so a rtemis-side column rename would otherwise ship entries with
@@ -431,10 +431,7 @@ daemon_count <- function() {
 #' @noRd
 handle_algorithms <- function(conn, frame, server) {
   req_id <- frame[["header"]][["id"]] %||% NA_character_
-  tbl <- asNamespace("rtemis")[["supervised_algorithms"]]
-  if (!is.data.frame(tbl)) {
-    return(make_response(req_id, list(algorithms = list())))
-  }
+  tbl <- rtemis::.supervised_algorithms()
   .require_cols(
     tbl,
     c("name", "description", "classification", "regression", "survival"),
@@ -442,11 +439,11 @@ handle_algorithms <- function(conn, frame, server) {
   )
   algorithms <- lapply(seq_len(nrow(tbl)), function(i) {
     list(
-      name = as.character(tbl[i, "name"]),
-      description = as.character(tbl[i, "description"]),
-      supports_classification = isTRUE(as.logical(tbl[i, "classification"])),
-      supports_regression = isTRUE(as.logical(tbl[i, "regression"])),
-      supports_survival = isTRUE(as.logical(tbl[i, "survival"]))
+      name = tbl[["name"]][[i]],
+      description = tbl[["description"]][[i]],
+      supports_classification = tbl[["classification"]][[i]],
+      supports_regression = tbl[["regression"]][[i]],
+      supports_survival = tbl[["survival"]][[i]]
     )
   })
   make_response(req_id, list(algorithms = algorithms))
@@ -467,18 +464,17 @@ handle_algorithms <- function(conn, frame, server) {
 #' @noRd
 handle_decomp_algorithms <- function(conn, frame, server) {
   req_id <- frame[["header"]][["id"]] %||% NA_character_
-  tbl <- asNamespace("rtemis")[["decom_algorithms"]]
-  if (!is.data.frame(tbl)) {
-    return(make_response(req_id, list(algorithms = list())))
-  }
-  applicable <- asNamespace("rtemis")[["decom_algorithms_applicable"]] %||%
-    character()
+  tbl <- rtemis::decomposition_traits()
+  .require_cols(
+    tbl,
+    c("name", "description", "can_apply"),
+    "decomposition_traits"
+  )
   algorithms <- lapply(seq_len(nrow(tbl)), function(i) {
-    name <- as.character(tbl[i, 1L])
     list(
-      name = name,
-      description = as.character(tbl[i, 2L]),
-      applicable = name %in% applicable
+      name = tbl[["name"]][[i]],
+      description = tbl[["description"]][[i]],
+      applicable = tbl[["can_apply"]][[i]]
     )
   })
   make_response(req_id, list(algorithms = algorithms))
@@ -560,7 +556,7 @@ prop_enums <- function(config) {
       raw <- fmls[[as.character(raw)]]
     }
     default <- tryCatch(
-      eval(raw, envir = asNamespace("rtemis")),
+      eval(raw, envir = environment(setup_fn)),
       error = function(e) NULL
     )
     # Enumerated choices come from the property, which is where rtemis declares
@@ -579,7 +575,7 @@ prop_enums <- function(config) {
     if (
       missing(raw) ||
         (is.symbol(raw) &&
-          !exists(as.character(raw), envir = asNamespace("rtemis")))
+          !exists(as.character(raw), envir = environment(setup_fn)))
     ) {
       if (!is.null(hp_values[[arg]])) {
         default <- hp_values[[arg]]
@@ -630,7 +626,7 @@ handle_algorithm_describe <- function(conn, frame, server) {
   }
 
   alg_name <- tryCatch(
-    get_alg_name(name),
+    rtemis::.get_alg_name(name),
     error = function(e) {
       rtemis.core::abort(
         paste0("Unknown algorithm `", name, "`."),
@@ -641,7 +637,7 @@ handle_algorithm_describe <- function(conn, frame, server) {
 
   setup_fn_name <- paste0("setup_", alg_name)
   setup_fn <- tryCatch(
-    get(setup_fn_name, envir = asNamespace("rtemis")),
+    getExportedValue("rtemis", setup_fn_name),
     error = function(e) {
       rtemis.core::abort(
         paste0("No setup function for `", alg_name, "`."),
@@ -673,18 +669,8 @@ handle_algorithm_describe <- function(conn, frame, server) {
 
   hyperparameters <- .live_build_schema(setup_fn, hp_values, tunable_set, hp)
 
-  alg_row <- tryCatch(
-    asNamespace("rtemis")[["supervised_algorithms"]],
-    error = function(e) NULL
-  )
-  description <- NA_character_
-  if (is.data.frame(alg_row)) {
-    .require_cols(alg_row, c("name", "description"), "supervised_algorithms")
-    hit <- which(alg_row[["name"]] == alg_name)[1L]
-    if (!is.na(hit)) {
-      description <- as.character(alg_row[hit, "description"])
-    }
-  }
+  alg_tbl <- rtemis::.supervised_algorithms()
+  description <- alg_tbl[["description"]][match(alg_name, alg_tbl[["name"]])]
 
   make_response(
     req_id,
@@ -727,7 +713,7 @@ handle_decomp_algorithm_describe <- function(conn, frame, server) {
   }
 
   alg_name <- tryCatch(
-    get_decom_name(name),
+    rtemis::.get_decom_name(name),
     error = function(e) {
       rtemis.core::abort(
         paste0("Unknown decomposition algorithm `", name, "`."),
@@ -738,7 +724,7 @@ handle_decomp_algorithm_describe <- function(conn, frame, server) {
 
   setup_fn_name <- paste0("setup_", alg_name)
   setup_fn <- tryCatch(
-    get(setup_fn_name, envir = asNamespace("rtemis")),
+    getExportedValue("rtemis", setup_fn_name),
     error = function(e) {
       rtemis.core::abort(
         paste0("No setup function for `", alg_name, "`."),
@@ -769,17 +755,8 @@ handle_decomp_algorithm_describe <- function(conn, frame, server) {
     config = cfg
   )
 
-  alg_tbl <- tryCatch(
-    asNamespace("rtemis")[["decom_algorithms"]],
-    error = function(e) NULL
-  )
-  description <- NA_character_
-  if (is.data.frame(alg_tbl)) {
-    hit <- which(alg_tbl[, 1L] == alg_name)[1L]
-    if (!is.na(hit)) {
-      description <- as.character(alg_tbl[hit, 2L])
-    }
-  }
+  alg_tbl <- rtemis::decomposition_traits()
+  description <- alg_tbl[["description"]][match(alg_name, alg_tbl[["name"]])]
 
   make_response(
     req_id,
@@ -805,15 +782,9 @@ handle_decomp_algorithm_describe <- function(conn, frame, server) {
 #' @noRd
 handle_cluster_algorithms <- function(conn, frame, server) {
   req_id <- frame[["header"]][["id"]] %||% NA_character_
-  tbl <- asNamespace("rtemis")[["clust_algorithms"]]
-  if (!is.data.frame(tbl)) {
-    return(make_response(req_id, list(algorithms = list())))
-  }
-  algorithms <- lapply(seq_len(nrow(tbl)), function(i) {
-    list(
-      name = as.character(tbl[i, 1L]),
-      description = as.character(tbl[i, 2L])
-    )
+  descriptions <- rtemis::available_clustering(verbosity = 0L)
+  algorithms <- lapply(names(descriptions), function(name) {
+    list(name = name, description = descriptions[[name]])
   })
   make_response(req_id, list(algorithms = algorithms))
 }
@@ -849,7 +820,7 @@ handle_cluster_algorithm_describe <- function(conn, frame, server) {
   }
 
   alg_name <- tryCatch(
-    asNamespace("rtemis")[["get_clust_name"]](name),
+    rtemis::.get_clust_name(name),
     error = function(e) {
       rtemis.core::abort(
         paste0("Unknown clustering algorithm `", name, "`."),
@@ -860,7 +831,7 @@ handle_cluster_algorithm_describe <- function(conn, frame, server) {
 
   setup_fn_name <- paste0("setup_", alg_name)
   setup_fn <- tryCatch(
-    get(setup_fn_name, envir = asNamespace("rtemis")),
+    getExportedValue("rtemis", setup_fn_name),
     error = function(e) {
       rtemis.core::abort(
         paste0("No setup function for `", alg_name, "`."),
@@ -891,17 +862,7 @@ handle_cluster_algorithm_describe <- function(conn, frame, server) {
     config = cfg
   )
 
-  alg_tbl <- tryCatch(
-    asNamespace("rtemis")[["clust_algorithms"]],
-    error = function(e) NULL
-  )
-  description <- NA_character_
-  if (is.data.frame(alg_tbl)) {
-    hit <- which(alg_tbl[, 1L] == alg_name)[1L]
-    if (!is.na(hit)) {
-      description <- as.character(alg_tbl[hit, 2L])
-    }
-  }
+  description <- rtemis::available_clustering(verbosity = 0L)[[alg_name]]
 
   make_response(
     req_id,
@@ -1481,7 +1442,7 @@ handle_train <- function(conn, frame, server) {
   }
 
   # No progress plumbing here: `train()` reports its nested progress through the
-  # rtemis.core msg sink, which `ensure_daemon_sink()` has already installed on this
+  # rtemis.core msg sink, which `.ensure_daemon_sink()` has already installed on this
   # daemon. Each `progress_begin`/`update`/`end` ships an envelope carrying node ids,
   # counters and label, and `route_progress()` turns those into nested
   # `job.progress` events. (Until rtemis 1.3.5 a `progress = ` callback duplicated a
@@ -1612,7 +1573,7 @@ handle_unsupervised <- function(conn, frame, server, kind) {
 unsupervised_kinds <- list(
   decomp = list(
     label = "decomposition",
-    get_name = function(algorithm) get_decom_name(algorithm),
+    get_name = rtemis::.get_decom_name,
     # The canonical wire reader, not `setup_<Algo>()` directly: it rebuilds an
     # object-valued setting from the class declaration, so a config whose
     # settings nest (a criterion, an approximation) reads the same here as
@@ -1629,7 +1590,7 @@ unsupervised_kinds <- list(
   ),
   cluster = list(
     label = "clustering",
-    get_name = function(algorithm) get_clust_name(algorithm),
+    get_name = rtemis::.get_clust_name,
     read = function(alg_name, settings) {
       rtemis::.list_to_ClusteringConfig(c(list(algorithm = alg_name), settings))
     },
@@ -2023,10 +1984,9 @@ handle_job_result <- function(conn, frame, server) {
       )
     }
     ld_dt <- loadings_table(result)
-    if (is.null(ld_dt) || NROW(ld_dt) == 0L) {
-      # Algorithm has no loadings concept (UMAP / tSNE / Isomap) or the
-      # backend didn't expose them. Same empty-pointer convention as
-      # `varimp` for algorithms without varimp.
+    if (is.null(ld_dt)) {
+      # The algorithm has no loadings (its `linear` trait is FALSE). Same
+      # empty-pointer convention as `varimp` for algorithms without varimp.
       return(make_response(
         req_id,
         list(rows = 0L, cols = 0L, columns = list(), format = "arrow-ipc")

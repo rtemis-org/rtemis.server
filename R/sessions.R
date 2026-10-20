@@ -9,7 +9,7 @@
 # on nearly every operation. Rather than reconstructing an immutable S7
 # object on every mutation, internal session state is held in plain R
 # environments (which have reference semantics). The registry itself is an
-# env keyed by session id, stored in rtemis's `live` env.
+# env keyed by session id, stored in rtemis.server's `live` env.
 #
 # S7 wrapping is reserved for **wire-shaped snapshots** (the structure the
 # frontend sees on `session.join` / `session.list`), produced on demand by

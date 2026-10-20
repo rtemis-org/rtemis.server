@@ -27,7 +27,7 @@ format:
 # Generate roxygen2 documentation
 document: format
     @just _msg "─── Documenting {{pkg}} package... ───"
-    {{rscript}} -e "roxygen2::roxygenize()"
+    {{rscript}} tools/document.R
     @just _msg "Done"
 
 # Document and install the package locally with pak

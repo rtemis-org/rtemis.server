@@ -236,7 +236,10 @@ test_that("decomp + job.status + job.result happy path (PCA)", {
   ld_hdr <- ld[["header"]]
   expect_true(ld_hdr[["ok"]])
   expect_equal(ld_hdr[["result"]][["rows"]], 4L)
-  expect_true("variable" %in% ld_hdr[["result"]][["columns"]])
+  expect_equal(
+    unlist(ld_hdr[["result"]][["columns"]]),
+    c("variable", "PC1", "PC2")
+  )
 })
 
 test_that("decomp accepts a features subset and uses only those columns", {

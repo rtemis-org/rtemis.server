@@ -25,7 +25,11 @@ local({
     {
       for (path in c(test_log, paste0(test_log, ".fail"))) {
         if (file.exists(path)) {
-          log_name <- if (endsWith(path, ".fail")) "testthat.Rout.fail" else "testthat.Rout"
+          log_name <- if (endsWith(path, ".fail")) {
+            "testthat.Rout.fail"
+          } else {
+            "testthat.Rout"
+          }
           file.copy(path, file.path(output, log_name), overwrite = TRUE)
         }
       }

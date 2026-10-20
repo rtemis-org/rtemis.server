@@ -183,7 +183,7 @@
 
 
 build_super_config <- function(params, dat_training) {
-  args <- S7::props(.list_to_SuperConfig(.nest_hyperparameters(.from_wire(
+  args <- S7::props(rtemis::.list_to_SuperConfig(.nest_hyperparameters(.from_wire(
     params
   ))))
   args[.PORTABLE_ONLY_PROPERTIES] <- NULL

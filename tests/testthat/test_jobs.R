@@ -85,7 +85,7 @@ test_that("submit_job() injects env values into the daemon task", {
 
 
 # submit_job: job_id propagation to live env --------------------------------
-test_that("submit_job() exposes job_id in rtemis::live on the daemon", {
+test_that("submit_job() exposes job_id in the server state on the daemon", {
   s <- make_session()
   on.exit(clear_sessions(), add = TRUE)
 
@@ -93,7 +93,7 @@ test_that("submit_job() exposes job_id in rtemis::live on the daemon", {
     session = s,
     type = "test",
     params = list(),
-    expr = quote(asNamespace("rtemis")$live$rtemislive_job_id)
+    expr = quote(rtemis.server:::live[["rtemislive_job_id"]])
   )
   wait_for_resolved(job)
   check_job_resolved(job)
