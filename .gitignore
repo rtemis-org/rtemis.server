@@ -50,3 +50,6 @@ cran-comments.md
 AGENTS.md
 .claude/
 SKILL.md
+
+# Local coverage reports
+coverage/

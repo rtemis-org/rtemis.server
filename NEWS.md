@@ -3,6 +3,10 @@
 This file starts here: entries below cover changes from this point forward
 rather than reconstructing the package's earlier history.
 
+## 0.2.2
+
+- The `varimp` slice sends `rtemis::varimp_ranking()`: one row per measure, variable and resample, with each variable's mean across resamples and its rank, in rank order within each measure. `top_n` keeps ranks 1 to `top_n` of each measure, and the pointer's `variables` gives each measure's number of ranked variables; requires rtemis 1.4.3.
+
 ## 0.2.1
 
 - Decomposition and clustering jobs build their config through rtemis's wire readers, so a setting that is itself an object (PAMK's criterion, a spectral variant's Nystrom approximation) is read the same way as from a file; requires rtemis 1.4.1.

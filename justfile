@@ -27,7 +27,7 @@ format:
 # Generate roxygen2 documentation
 document: format
     @just _msg "─── Documenting {{pkg}} package... ───"
-    {{rscript}} -e "roxygen2::roxygenize()"
+    {{rscript}} tools/document.R
     @just _msg "Done"
 
 # Document and install the package locally with pak
@@ -41,6 +41,10 @@ test:
     @just _msg "─── Running testthat tests for {{pkg}}... ───"
     {{rscript}} -e "testthat::test_local(stop_on_failure = TRUE)"
     @just _msg "Done"
+
+# Measure local test coverage, including tests skipped on CRAN
+coverage-local output="coverage/local":
+    {{rscript}} tools/coverage-local.R {{quote(output)}}
 
 # Build the source tarball
 build: clean

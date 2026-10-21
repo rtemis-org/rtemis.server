@@ -23,3 +23,5 @@
 ^pkgdown$
 ^justfile$
 ^SKILL\.md$
+^tools$
+^coverage$

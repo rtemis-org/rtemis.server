@@ -368,47 +368,38 @@ roc_table <- function(sup, max_points = 1000L) {
 
 #' Variable importance table for the `varimp` slice
 #'
-#' Combines the measures of each `VariableImportance` with
-#' [rtemis::varimp_table()]: one row per predictor and one numeric column per
-#' measure. For a `SupervisedRes`, the per-resample tables are stacked and a
-#' `fold` column, second after `variable`, names the resample, so the client
-#' renders one boxplot per predictor. Resamples without importance are
-#' skipped.
+#' The ranking of [rtemis::varimp_ranking()]: one row per measure, variable
+#' and resample with an available score, with `measure`, `variable`, `fold`
+#' (resampled results only), `value`, `summary` (the mean across resamples)
+#' and `rank`, in rank order within each measure. `top_n` keeps the rows of
+#' ranks `1` to `top_n` of each measure.
 #'
 #' @param sup `Supervised` or `SupervisedRes`.
+#' @param top_n Optional Integer `[1, Inf)`: Number of ranks to keep per
+#'   measure. `NULL` keeps every rank.
 #'
-#' @return data.table, or `NULL` when `sup` is not a supervised result or
-#'   reports no importance.
+#' @return Named list: `table`, a data.table, and `variables`, the number of
+#'   ranked variables of each measure before `top_n` is applied, keyed by
+#'   measure; or `NULL` when `sup` is not a supervised result or reports no
+#'   importance.
 #'
 #' @author EDG
 #' @keywords internal
 #' @noRd
-varimp_table <- function(sup) {
-  vi <- tryCatch(rtemis::get_varimp(sup), error = function(e) NULL)
-  if (is.null(vi)) {
+varimp_table <- function(sup, top_n = NULL) {
+  ranking <- tryCatch(rtemis::varimp_ranking(sup), error = function(e) NULL)
+  if (is.null(ranking)) {
     return(NULL)
   }
-  if (inherits(vi, "rtemis::VariableImportance")) {
-    return(data.table::as.data.table(rtemis::varimp_table(vi)))
+  measures <- unique(ranking[["measure"]])
+  variables <- lapply(
+    stats::setNames(nm = measures),
+    function(m) max(ranking[["rank"]][ranking[["measure"]] == m])
+  )
+  if (!is.null(top_n)) {
+    ranking <- ranking[ranking[["rank"]] <= top_n, , drop = FALSE]
   }
-
-  fold_labels <- names(vi)
-  if (is.null(fold_labels) || any(!nzchar(fold_labels))) {
-    fold_labels <- as.character(seq_along(vi))
-  }
-  pieces <- lapply(seq_along(vi), function(i) {
-    if (is.null(vi[[i]])) {
-      return(NULL)
-    }
-    dt <- data.table::as.data.table(rtemis::varimp_table(vi[[i]]))
-    dt[, let(fold = fold_labels[i])]
-    data.table::setcolorder(dt, c("variable", "fold"))
-  })
-  pieces <- Filter(Negate(is.null), pieces)
-  if (length(pieces) == 0L) {
-    return(NULL)
-  }
-  data.table::rbindlist(pieces, use.names = TRUE, fill = TRUE)
+  list(table = data.table::as.data.table(ranking), variables = variables)
 }
 
 
@@ -515,59 +506,25 @@ transformed_table <- function(dec) {
 
 #' Loadings matrix for the `loadings` slice
 #'
-#' Extracts the algorithm-specific loadings (interpretable variables ×
-#' components matrix) from a `Decomposition` and wraps it as a
-#' data.table with a leading `variable` column. Returns NULL for
-#' algorithms that have no loadings concept (UMAP, tSNE, Isomap).
-#'
-#' Per-algorithm sources (see `R/decomp_*.R`):
-#'
-#' - PCA: `decom$rotation` (variables × PCs)
-#' - ICA: `decom$A` (mixing matrix; sources × variables, transposed)
-#' - NMF: `NMF::basis(decom)` (variables × components)
+#' Wraps `rtemis::get_loadings()` of a `Decomposition`, a features by
+#' components matrix, as a data.table with a leading `variable` column
+#' holding the feature names.
 #'
 #' @param dec `Decomposition`.
 #'
-#' @return data.table or NULL when loadings are not defined for the
-#'   algorithm.
+#' @return data.table, or NULL when the algorithm has no loadings.
 #'
 #' @author EDG
 #' @keywords internal
 #' @noRd
 loadings_table <- function(dec) {
-  algo <- tryCatch(prop(dec, "algorithm"), error = function(e) NA_character_)
-  decom <- tryCatch(prop(dec, "decom"), error = function(e) NULL)
-  if (is.null(decom) || is.na(algo)) {
-    return(NULL)
-  }
-
-  m <- switch(
-    algo,
-    PCA = decom[["rotation"]],
-    ICA = {
-      a <- decom[["A"]]
-      if (is.null(a)) NULL else t(a)
-    },
-    NMF = tryCatch(
-      asNamespace("NMF")[["basis"]](decom),
-      error = function(e) NULL
-    ),
-    NULL
-  )
+  m <- rtemis::get_loadings(dec)
   if (is.null(m)) {
     return(NULL)
   }
-  m <- as.matrix(m)
-  if (is.null(colnames(m))) {
-    colnames(m) <- paste0("V", seq_len(NCOL(m)))
-  }
-  varnames <- rownames(m)
-  if (is.null(varnames)) {
-    varnames <- paste0("X", seq_len(NROW(m)))
-  }
   dt <- data.table::as.data.table(m)
-  dt[, let(variable = varnames)]
-  data.table::setcolorder(dt, c("variable", setdiff(names(dt), "variable")))
+  dt[, let(variable = rownames(m))]
+  data.table::setcolorder(dt, "variable")
   dt
 }
 
