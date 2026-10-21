@@ -119,33 +119,46 @@ test_that("varimp_table returns NULL on non-Supervised", {
   expect_null(varimp_table(1L))
 })
 
-test_that("varimp_table returns one column per measure for a Supervised", {
+test_that("varimp_table returns rtemis's ranking for a Supervised", {
   mod <- rtemis::train(
     iris[, 1:4],
     hyperparameters = rtemis::setup_GLM(),
     verbosity = 0L
   )
   vi <- varimp_table(mod)
-  expect_true(data.table::is.data.table(vi))
-  expect_equal(names(vi), c("variable", "Coefficient"))
-  expect_setequal(
-    vi[["variable"]],
-    c("(Intercept)", "Sepal.Length", "Sepal.Width", "Petal.Length")
+  expect_true(data.table::is.data.table(vi[["table"]]))
+  expect_equal(
+    vi[["table"]],
+    data.table::as.data.table(rtemis::varimp_ranking(mod))
   )
-  expect_true(is.numeric(vi[["Coefficient"]]))
+  expect_equal(
+    names(vi[["table"]]),
+    c("measure", "variable", "value", "summary", "rank")
+  )
+  expect_identical(vi[["variables"]], list(Coefficient = 4L))
+  top <- varimp_table(mod, top_n = 2L)
+  expect_identical(top[["table"]][["rank"]], 1:2)
+  expect_identical(top[["variables"]], list(Coefficient = 4L))
 })
 
-test_that("varimp_table stacks resamples with a fold column for a SupervisedRes", {
+test_that("varimp_table keeps every resample of the top ranks for a SupervisedRes", {
   mod <- rtemis::train(
     iris[, 1:4],
     hyperparameters = rtemis::setup_GLM(),
     outer_resampling_config = rtemis::setup_KFold(n_resamples = 3L),
     verbosity = 0L
   )
-  vi <- varimp_table(mod)
-  expect_equal(names(vi)[1:2], c("variable", "fold"))
+  vi <- varimp_table(mod)[["table"]]
+  expect_equal(
+    names(vi),
+    c("measure", "variable", "fold", "value", "summary", "rank")
+  )
   expect_setequal(unique(vi[["fold"]]), c("Fold_1", "Fold_2", "Fold_3"))
   expect_equal(NROW(vi), 3L * 4L)
+  expect_false(is.unsorted(vi[["rank"]]))
+  top <- varimp_table(mod, top_n = 1L)[["table"]]
+  expect_equal(NROW(top), 3L)
+  expect_identical(unique(top[["variable"]]), vi[["variable"]][[1L]])
 })
 
 
@@ -429,14 +442,41 @@ test_that("job.result `varimp` returns JSON (no payload) for a trained Supervise
   result <- resp[["header"]][["result"]]
   expect_equal(result[["format"]], "arrow-ipc")
   expect_true("columns" %in% names(result))
-  # GLM reports its coefficients: the payload decodes to a table with a
-  # `variable` column and one column per measure.
+  # GLM reports its coefficients: the payload decodes to the ranking, one row
+  # per measure and variable.
   expect_gt(result[["rows"]], 0L)
   expect_true(is.raw(resp[["payload"]]))
   back <- decode_arrow_ipc(resp[["payload"]])
   expect_equal(ncol(back), result[["cols"]])
   expect_true(all(result[["columns"]] %in% names(back)))
-  expect_equal(names(back)[1], "variable")
+  expect_equal(
+    names(back),
+    c("measure", "variable", "value", "summary", "rank")
+  )
+  expect_equal(result[["variables"]][["Coefficient"]], 4L)
+
+  top <- dispatch_request(
+    conn,
+    make_request(
+      "job.result",
+      params = list(job_id = job_id, slice = "varimp", top_n = 2L)
+    ),
+    server
+  )
+  expect_equal(top[["header"]][["result"]][["rows"]], 2L)
+  expect_equal(top[["header"]][["result"]][["variables"]][["Coefficient"]], 4L)
+  expect_identical(decode_arrow_ipc(top[["payload"]])[["rank"]], 1:2)
+  for (bad in list(0L, -1L, 1.5, "2", c(1L, 2L))) {
+    bad_resp <- dispatch_request(
+      conn,
+      make_request(
+        "job.result",
+        params = list(job_id = job_id, slice = "varimp", top_n = bad)
+      ),
+      server
+    )
+    expect_identical(bad_resp[["error"]][["code"]], "invalid_params")
+  }
 })
 
 # report_markdown ------------------------------------------------------------

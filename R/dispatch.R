@@ -1745,8 +1745,12 @@ handle_job_cancel <- function(conn, frame, server) {
 #'   the document as-is; when there is no record to give, a small
 #'   `{available: false, reason}` pointer instead (`reason` is `unsupported`,
 #'   `no_input_config`, or `too_large`).
-#' - `varimp`: small JSON pointer (`{rows, cols, columns}`) + Arrow IPC
-#'   payload of the variable-importance table.
+#' - `varimp`: small JSON pointer (`{rows, cols, columns, variables}`) +
+#'   Arrow IPC payload of the variable-importance ranking of
+#'   `rtemis::varimp_ranking()`, in rank order within each measure. The
+#'   optional `top_n` parameter keeps ranks `1` to `top_n` of each measure;
+#'   `variables` is the number of ranked variables of each measure before the
+#'   cut.
 #' - `predictions`: small JSON pointer + Arrow IPC of the long-format
 #'   predictions table.
 #' - `roc`: small JSON pointer + Arrow IPC of the long-format ROC-curve
@@ -1813,7 +1817,24 @@ handle_job_result <- function(conn, frame, server) {
     return(make_response(req_id, record_json(result)))
   }
   if (slice == "varimp") {
-    vi_dt <- varimp_table(result)
+    top_n <- params[["top_n"]]
+    if (!is.null(top_n)) {
+      if (
+        !is.numeric(top_n) ||
+          length(top_n) != 1L ||
+          is.na(top_n) ||
+          top_n < 1 ||
+          top_n != round(top_n)
+      ) {
+        rtemis.core::abort(
+          "`top_n` must be a positive whole number.",
+          class = "rtemislive_invalid_params"
+        )
+      }
+      top_n <- as.integer(top_n)
+    }
+    vi <- varimp_table(result, top_n = top_n)
+    vi_dt <- vi[["table"]]
     if (is.null(vi_dt) || NROW(vi_dt) == 0L) {
       # No varimp available for this algorithm: return an empty pointer
       # (no payload) so the client can disambiguate from a transport error.
@@ -1829,6 +1850,7 @@ handle_job_result <- function(conn, frame, server) {
         rows = NROW(vi_dt),
         cols = NCOL(vi_dt),
         columns = names(vi_dt),
+        variables = vi[["variables"]],
         format = "arrow-ipc"
       ),
       payload
