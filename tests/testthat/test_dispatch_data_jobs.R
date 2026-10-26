@@ -834,8 +834,15 @@ test_that("job.load's timing comes from the model's own session, not upload time
   s <- connection_session(conn)
   job <- get_job(s, job_id)
 
-  expect_equal(job[["started_at"]], run_started)
-  expect_equal(job[["completed_at"]], run_finished)
+  # The record writes milliseconds, in UTC.
+  expect_lt(
+    abs(as.numeric(job[["started_at"]]) - as.numeric(run_started)),
+    1e-3
+  )
+  expect_lt(
+    abs(as.numeric(job[["completed_at"]]) - as.numeric(run_finished)),
+    1e-3
+  )
   # Not "now": the original run predates this test's job.load call.
   expect_true(job[["completed_at"]] < Sys.time())
 })

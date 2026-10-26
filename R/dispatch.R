@@ -423,8 +423,8 @@ daemon_count <- function() {
 #'
 #' Returns the catalogue of supervised learning algorithms. Each entry:
 #' `{ name, description, supports_classification, supports_regression,
-#' supports_survival }`. Per-algorithm hyperparameter schemas are fetched
-#' separately via `handle_algorithm_describe()` (`algorithm.describe`).
+#' supports_survival }`. Each algorithm's hyperparameters are declared by its
+#' published schema.
 #'
 #' @author EDG
 #' @keywords internal
@@ -455,9 +455,8 @@ handle_algorithms <- function(conn, frame, server) {
 #' Returns the catalogue of decomposition algorithms. Each entry:
 #' `{ name, description, applicable }`, where `applicable` is `TRUE` when the
 #' algorithm's fitted transform can be applied to new data (the requirement for
-#' use as a `train()` `decomposition_config`). Per-algorithm config schemas are
-#' fetched separately via `handle_decomp_algorithm_describe()`
-#' (`decomp.algorithm.describe`).
+#' use as a `train()` `decomposition_config`). Each algorithm's settings are
+#' declared by its published schema.
 #'
 #' @author EDG
 #' @keywords internal
@@ -481,301 +480,11 @@ handle_decomp_algorithms <- function(conn, frame, server) {
 }
 
 
-# Type-name from a default value. NULL becomes "null" (which the UI
-# renders as a free-text input). Length is ignored - a `c(...)` default
-# is treated as a choice set elsewhere.
-.hp_type_of <- function(v) {
-  if (is.null(v)) {
-    "null"
-  } else if (is.logical(v)) {
-    "logical"
-  } else if (is.integer(v)) {
-    "integer"
-  } else if (is.double(v)) {
-    "double"
-  } else if (is.character(v)) {
-    "character"
-  } else {
-    "other"
-  }
-}
-
-
-# Enumerated choices declared by a config object's S7 properties.
-#
-# rtemis declares an argument's admissible values once, on the property
-# (`prop_string(enum = ...)`), and validates against that list there. A
-# `setup_*()` formal usually carries only the default value, so reading the
-# enum off the built object is what lets `describe` report every choice — with
-# no second copy of the list to drift, and no arg left rendering as a free-text
-# box in the client just because its signature is a scalar.
-prop_enums <- function(config) {
-  if (!inherits(config, "S7_object")) {
-    return(list())
-  }
-  Filter(
-    length,
-    lapply(S7::S7_class(config)@properties, function(p) {
-      # NULL unless built by a `prop_*` factory; rtemis carries the spec as a
-      # plain named list, so read it with `[[` rather than an S7 accessor.
-      spec <- p[["spec"]]
-      if (is.null(spec)) NULL else as.list(spec[["enum"]])
-    })
-  )
-}
-
-
-# Build the schema for one setup_*() function.
-#
-# Walks the formals, classifying each arg as:
-# - enumerated (property enum, or a `c("a", "b", ...)` formal) -> `choices`,
-#   with the first value as the default
-# - any other multi-element default -> flattened to its first element
-# - single-value default (or NULL) -> reported as-is
-#
-# `tunable_set` is the set of arg names considered tunable. For
-# algorithm hyperparameters this is `Hyperparameters@tunable_hyperparameters`;
-# for resampler / other configs pass `character(0)`.
-#
-# `config` is the object `setup_fn()` builds, when the caller has one; it
-# carries the property enums (see `prop_enums`).
-.live_build_schema <- function(
-  setup_fn,
-  hp_values = list(),
-  tunable_set = character(),
-  config = NULL
-) {
-  enums <- prop_enums(config)
-  fmls <- formals(setup_fn)
-  lapply(names(fmls), function(arg) {
-    raw <- fmls[[arg]]
-    # A formal whose default simply names another formal (e.g.
-    # `center = scale`) should report that formal's concrete default,
-    # not the captured function the bare symbol would evaluate to.
-    if (is.symbol(raw) && as.character(raw) %in% names(fmls)) {
-      raw <- fmls[[as.character(raw)]]
-    }
-    default <- tryCatch(
-      eval(raw, envir = environment(setup_fn)),
-      error = function(e) NULL
-    )
-    # Enumerated choices come from the property, which is where rtemis declares
-    # and validates them; the `match.arg`-style `c("a", "b", ...)` formal is
-    # the fallback for schemas built without an object -- a dispatcher whose
-    # `type` selects the subclass has no single object to read against.
-    choices <- enums[[arg]] %||%
-      if (is.character(default) && length(default) > 1L) as.list(default)
-    # A multi-value default is the `match.arg` idiom: `setup_fn()` uses the
-    # first element.
-    if (length(default) > 1L) {
-      default <- default[[1L]]
-    }
-    # Fall back to the constructed Hyperparameters value when the formal
-    # has no usable default (missing-arg sentinel, unresolved symbol).
-    if (
-      missing(raw) ||
-        (is.symbol(raw) &&
-          !exists(as.character(raw), envir = environment(setup_fn)))
-    ) {
-      if (!is.null(hp_values[[arg]])) {
-        default <- hp_values[[arg]]
-      }
-    }
-    entry <- list(
-      name = arg,
-      type = .hp_type_of(default),
-      default = default,
-      tunable = arg %in% tunable_set
-    )
-    if (!is.null(choices)) {
-      entry[["choices"]] <- choices
-    }
-    entry
-  })
-}
-
-
-#' `algorithm.describe` handler
-#'
-#' Returns the hyperparameter schema for one algorithm so the client can
-#' render a configuration form. The schema is built by calling
-#' `setup_<Name>()` with defaults, then walking the formals of that
-#' function:
-#'
-#' - `name`: formal argument name.
-#' - `type`: inferred from the default value's R type.
-#' - `default`: the default value (NULL serialises as JSON null).
-#' - `tunable`: TRUE if the arg appears in the constructed
-#'   `Hyperparameters` object's `@tunable_hyperparameters`.
-#'
-#' Wire response:
-#' `{ name, description, hyperparameters: [{name, type, default, tunable}, ...] }`
-#'
-#' @author EDG
-#' @keywords internal
-#' @noRd
-handle_algorithm_describe <- function(conn, frame, server) {
-  req_id <- frame[["header"]][["id"]] %||% NA_character_
-  params <- frame[["header"]][["params"]] %||% list()
-  name <- params[["name"]]
-  if (is.null(name) || !is.character(name) || length(name) != 1L) {
-    rtemis.core::abort(
-      "`name` is required and must be a single algorithm name.",
-      class = "rtemislive_invalid_params"
-    )
-  }
-
-  alg_name <- tryCatch(
-    rtemis::.get_alg_name(name),
-    error = function(e) {
-      rtemis.core::abort(
-        paste0("Unknown algorithm `", name, "`."),
-        class = "rtemislive_not_found"
-      )
-    }
-  )
-
-  setup_fn_name <- paste0("setup_", alg_name)
-  setup_fn <- tryCatch(
-    getExportedValue("rtemis", setup_fn_name),
-    error = function(e) {
-      rtemis.core::abort(
-        paste0("No setup function for `", alg_name, "`."),
-        class = "rtemislive_not_found"
-      )
-    }
-  )
-
-  # Build defaults instance for tunable-list lookup.
-  hp <- tryCatch(
-    setup_fn(),
-    error = function(e) {
-      rtemis.core::abort(
-        paste0("`", setup_fn_name, "()` failed: ", conditionMessage(e)),
-        class = "rtemislive_internal_error"
-      )
-    }
-  )
-  tunable_set <- if (inherits(hp, "rtemis::Hyperparameters")) {
-    prop(hp, "tunable_hyperparameters")
-  } else {
-    character()
-  }
-  hp_values <- if (inherits(hp, "rtemis::Hyperparameters")) {
-    prop(hp, "hyperparameters")
-  } else {
-    list()
-  }
-
-  hyperparameters <- .live_build_schema(setup_fn, hp_values, tunable_set, hp)
-
-  alg_tbl <- rtemis::.supervised_algorithms()
-  description <- alg_tbl[["description"]][match(alg_name, alg_tbl[["name"]])]
-
-  make_response(
-    req_id,
-    list(
-      name = alg_name,
-      description = description,
-      hyperparameters = hyperparameters
-    )
-  )
-}
-
-
-#' `decomp.algorithm.describe` handler
-#'
-#' Returns the config schema for one decomposition algorithm so the
-#' client can render a configuration form. Schema is built by calling
-#' `setup_<Name>()` with defaults and walking its formals via
-#' `.live_build_schema()`.
-#'
-#' Decomposition configs have no tunable concept (no `Hyperparameters`
-#' S7 class), so `tunable_set = character()`. Default fallbacks are
-#' pulled from the constructed `<Algo>DecompositionConfig`'s `config`
-#' list (the S7 prop holding the resolved values).
-#'
-#' Wire response:
-#' `{ name, description, hyperparameters: [{name, type, default, tunable}, ...] }`
-#'
-#' @author EDG
-#' @keywords internal
-#' @noRd
-handle_decomp_algorithm_describe <- function(conn, frame, server) {
-  req_id <- frame[["header"]][["id"]] %||% NA_character_
-  params <- frame[["header"]][["params"]] %||% list()
-  name <- params[["name"]]
-  if (is.null(name) || !is.character(name) || length(name) != 1L) {
-    rtemis.core::abort(
-      "`name` is required and must be a single algorithm name.",
-      class = "rtemislive_invalid_params"
-    )
-  }
-
-  alg_name <- tryCatch(
-    rtemis::.get_decom_name(name),
-    error = function(e) {
-      rtemis.core::abort(
-        paste0("Unknown decomposition algorithm `", name, "`."),
-        class = "rtemislive_not_found"
-      )
-    }
-  )
-
-  setup_fn_name <- paste0("setup_", alg_name)
-  setup_fn <- tryCatch(
-    getExportedValue("rtemis", setup_fn_name),
-    error = function(e) {
-      rtemis.core::abort(
-        paste0("No setup function for `", alg_name, "`."),
-        class = "rtemislive_not_found"
-      )
-    }
-  )
-
-  cfg <- tryCatch(
-    setup_fn(),
-    error = function(e) {
-      rtemis.core::abort(
-        paste0("`", setup_fn_name, "()` failed: ", conditionMessage(e)),
-        class = "rtemislive_internal_error"
-      )
-    }
-  )
-  cfg_values <- if (inherits(cfg, "rtemis::DecompositionConfig")) {
-    prop(cfg, "config")
-  } else {
-    list()
-  }
-
-  hyperparameters <- .live_build_schema(
-    setup_fn,
-    cfg_values,
-    tunable_set = character(),
-    config = cfg
-  )
-
-  alg_tbl <- rtemis::decomposition_traits()
-  description <- alg_tbl[["description"]][match(alg_name, alg_tbl[["name"]])]
-
-  make_response(
-    req_id,
-    list(
-      name = alg_name,
-      description = description,
-      hyperparameters = hyperparameters
-    )
-  )
-}
-
-
 #' `cluster.algorithms` handler
 #'
 #' Returns the catalogue of clustering algorithms. Each entry:
-#' `{ name, description }`. Per-algorithm config schemas are fetched
-#' separately via `handle_cluster_algorithm_describe()`
-#' (`cluster.algorithm.describe`). Parallel to
-#' `handle_decomp_algorithms()`.
+#' `{ name, description }`. Each algorithm's settings are declared by its
+#' published schema. Parallel to `handle_decomp_algorithms()`.
 #'
 #' @author EDG
 #' @keywords internal
@@ -787,126 +496,6 @@ handle_cluster_algorithms <- function(conn, frame, server) {
     list(name = name, description = descriptions[[name]])
   })
   make_response(req_id, list(algorithms = algorithms))
-}
-
-
-#' `cluster.algorithm.describe` handler
-#'
-#' Returns the config schema for one clustering algorithm so the
-#' client can render a configuration form. Schema is built by calling
-#' `setup_<Name>()` with defaults and walking its formals via
-#' `.live_build_schema()`.
-#'
-#' Clustering configs have no tunable concept, so
-#' `tunable_set = character()`. Default fallbacks are pulled from the
-#' constructed `<Algo>ClusteringConfig`'s `config` list. Parallel to
-#' `handle_decomp_algorithm_describe()`.
-#'
-#' Wire response:
-#' `{ name, description, hyperparameters: [{name, type, default, tunable}, ...] }`
-#'
-#' @author EDG
-#' @keywords internal
-#' @noRd
-handle_cluster_algorithm_describe <- function(conn, frame, server) {
-  req_id <- frame[["header"]][["id"]] %||% NA_character_
-  params <- frame[["header"]][["params"]] %||% list()
-  name <- params[["name"]]
-  if (is.null(name) || !is.character(name) || length(name) != 1L) {
-    rtemis.core::abort(
-      "`name` is required and must be a single algorithm name.",
-      class = "rtemislive_invalid_params"
-    )
-  }
-
-  alg_name <- tryCatch(
-    rtemis::.get_clust_name(name),
-    error = function(e) {
-      rtemis.core::abort(
-        paste0("Unknown clustering algorithm `", name, "`."),
-        class = "rtemislive_not_found"
-      )
-    }
-  )
-
-  setup_fn_name <- paste0("setup_", alg_name)
-  setup_fn <- tryCatch(
-    getExportedValue("rtemis", setup_fn_name),
-    error = function(e) {
-      rtemis.core::abort(
-        paste0("No setup function for `", alg_name, "`."),
-        class = "rtemislive_not_found"
-      )
-    }
-  )
-
-  cfg <- tryCatch(
-    setup_fn(),
-    error = function(e) {
-      rtemis.core::abort(
-        paste0("`", setup_fn_name, "()` failed: ", conditionMessage(e)),
-        class = "rtemislive_internal_error"
-      )
-    }
-  )
-  cfg_values <- if (inherits(cfg, "rtemis::ClusteringConfig")) {
-    prop(cfg, "config")
-  } else {
-    list()
-  }
-
-  hyperparameters <- .live_build_schema(
-    setup_fn,
-    cfg_values,
-    tunable_set = character(),
-    config = cfg
-  )
-
-  description <- rtemis::available_clustering(verbosity = 0L)[[alg_name]]
-
-  make_response(
-    req_id,
-    list(
-      name = alg_name,
-      description = description,
-      hyperparameters = hyperparameters
-    )
-  )
-}
-
-
-#' `preprocessor.describe` handler
-#'
-#' Returns the schema for `setup_SupervisedPreprocessor()` so the client can
-#' render a preprocessing configuration form. Same shape and machinery as
-#' `algorithm.describe`. `impute_missRanger_params` is a nested list with
-#' no scalar control, so it is omitted here and left to the server-side
-#' default; the matching `train` handler still accepts it.
-#'
-#' The supervised type, not `setup_Preprocessor()`. A preprocessor `train()`
-#' fits is replayed at predict time, so it cannot drop rows, and it cannot
-#' learn which columns to drop from a fold's own training subset -- four
-#' operations `SuperConfigLive` has no property for. Describing the wider type
-#' here would offer a client four settings whose submission `build_super_config()`
-#' rejects, and leave every consumer to re-derive which four.
-#'
-#' Wire response: `{ parameters: [{ name, type, default, tunable,
-#' choices? }, ...] }`.
-#'
-#' @author EDG
-#' @keywords internal
-#' @noRd
-handle_preprocessor_describe <- function(conn, frame, server) {
-  req_id <- frame[["header"]][["id"]] %||% NA_character_
-  skip <- "impute_missRanger_params"
-  parameters <- Filter(
-    function(p) !(p[["name"]] %in% skip),
-    .live_build_schema(
-      setup_SupervisedPreprocessor,
-      config = setup_SupervisedPreprocessor()
-    )
-  )
-  make_response(req_id, list(parameters = parameters))
 }
 
 
@@ -1933,17 +1522,12 @@ handle_job_result <- function(conn, frame, server) {
         class = "rtemislive_invalid_params"
       )
     }
-    out <- list(
-      training = to_json(prop(result, "metrics_training"))
+    # A model stores metrics for exactly the samples it stores predictions for.
+    samples <- unique(rtemis::get_predictions(result)[["sample"]])
+    out <- lapply(
+      stats::setNames(nm = samples),
+      function(s) to_json(rtemis::get_metrics(result, s))
     )
-    mv <- prop(result, "metrics_validation")
-    if (!is.null(mv)) {
-      out[["validation"]] <- to_json(mv)
-    }
-    mt <- prop(result, "metrics_test")
-    if (!is.null(mt)) {
-      out[["test"]] <- to_json(mt)
-    }
     return(make_response(req_id, out))
   }
   if (slice == "transformed") {
@@ -1954,7 +1538,7 @@ handle_job_result <- function(conn, frame, server) {
       )
     }
     tr_dt <- transformed_table(result)
-    if (is.null(tr_dt) || NROW(tr_dt) == 0L) {
+    if (NROW(tr_dt) == 0L) {
       return(make_response(
         req_id,
         list(rows = 0L, cols = 0L, columns = list(), format = "arrow-ipc")
@@ -1980,7 +1564,7 @@ handle_job_result <- function(conn, frame, server) {
       )
     }
     as_dt <- assignments_table(result)
-    if (is.null(as_dt) || NROW(as_dt) == 0L) {
+    if (NROW(as_dt) == 0L) {
       return(make_response(
         req_id,
         list(rows = 0L, cols = 0L, columns = list(), format = "arrow-ipc")
@@ -2414,28 +1998,12 @@ handle_choose_dir <- function(conn, frame, server) {
     handler = handle_algorithms,
     requires = "authed"
   ),
-  "algorithm.describe" = list(
-    handler = handle_algorithm_describe,
-    requires = "authed"
-  ),
   "decomp.algorithms" = list(
     handler = handle_decomp_algorithms,
     requires = "authed"
   ),
-  "decomp.algorithm.describe" = list(
-    handler = handle_decomp_algorithm_describe,
-    requires = "authed"
-  ),
   "cluster.algorithms" = list(
     handler = handle_cluster_algorithms,
-    requires = "authed"
-  ),
-  "cluster.algorithm.describe" = list(
-    handler = handle_cluster_algorithm_describe,
-    requires = "authed"
-  ),
-  "preprocessor.describe" = list(
-    handler = handle_preprocessor_describe,
     requires = "authed"
   ),
   # Attached, not merely authed: a `data_handle` is session-scoped, so the

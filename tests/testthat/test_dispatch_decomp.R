@@ -96,44 +96,6 @@ test_that("decomp.algorithms returns the catalogue with name + description", {
 })
 
 
-# decomp.algorithm.describe --------------------------------------------------
-
-test_that("decomp.algorithm.describe returns a config schema for PCA", {
-  server <- make_server()
-  conn <- authed_conn(server)
-  resp <- dispatch_request(
-    conn,
-    make_request(
-      "decomp.algorithm.describe",
-      params = list(name = "PCA")
-    ),
-    server
-  )
-  expect_true(resp[["ok"]])
-  expect_equal(resp[["result"]][["name"]], "PCA")
-  hps <- resp[["result"]][["hyperparameters"]]
-  hp_names <- vapply(hps, `[[`, character(1L), "name")
-  expect_true(all(c("k", "center", "scale", "tol") %in% hp_names))
-  # No tunable concept for decomposition.
-  expect_true(all(vapply(hps, `[[`, logical(1L), "tunable") == FALSE))
-})
-
-test_that("decomp.algorithm.describe unknown algorithm -> not_found", {
-  server <- make_server()
-  conn <- authed_conn(server)
-  resp <- dispatch_request(
-    conn,
-    make_request(
-      "decomp.algorithm.describe",
-      params = list(name = "NotARealAlgo")
-    ),
-    server
-  )
-  expect_false(resp[["ok"]])
-  expect_equal(resp[["error"]][["code"]], "not_found")
-})
-
-
 # decomp job submission ------------------------------------------------------
 
 test_that("decomp + job.status + job.result happy path (PCA)", {
@@ -417,8 +379,12 @@ test_that("job.result `loadings` slice on a non-Decomposition -> invalid_params"
 test_that("dispatch table exposes decomp.* and decomp methods", {
   expected <- c(
     "decomp.algorithms",
-    "decomp.algorithm.describe",
     "decomp"
   )
   expect_true(all(expected %in% names(.METHOD_TABLE)))
+  # Configuration forms are built from the published schemas.
+  expect_false(any(grepl(
+    "describe$",
+    setdiff(names(.METHOD_TABLE), "data.describe")
+  )))
 })

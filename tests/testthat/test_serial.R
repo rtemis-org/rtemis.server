@@ -115,6 +115,33 @@ test_that("predictions_table errors with invalid_params on non-Supervised", {
   )
 })
 
+test_that("predictions_table sends rtemis's predictions under the wire's names", {
+  mod <- rtemis::train(
+    iris[1:120, ],
+    dat_test = iris[121:150, ],
+    hyperparameters = rtemis::setup_GLMNET(alpha = 0, lambda = 0.1),
+    verbosity = 0L
+  )
+  pt <- predictions_table(mod)
+  expect_identical(names(pt)[1:3], c("split", "actual", "predicted"))
+  expect_setequal(unique(pt[["split"]]), c("training", "test"))
+  expect_true(all(paste0("prob_", levels(iris$Species)) %in% names(pt)))
+  expect_identical(
+    pt[pt[["split"]] == "test"][["predicted"]],
+    rtemis::get_predictions(mod, "test")[["predicted"]]
+  )
+
+  res <- rtemis::train(
+    iris[, 1:4],
+    hyperparameters = rtemis::setup_GLM(),
+    outer_resampling_config = rtemis::setup_KFold(n_resamples = 3L),
+    verbosity = 0L
+  )
+  pr <- predictions_table(res)
+  expect_identical(names(pr), c("split", "fold", "actual", "predicted"))
+  expect_setequal(unique(pr[["fold"]]), res@resample_ids)
+})
+
 test_that("varimp_table returns NULL on non-Supervised", {
   expect_null(varimp_table(1L))
 })

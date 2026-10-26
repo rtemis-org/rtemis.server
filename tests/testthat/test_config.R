@@ -1,7 +1,6 @@
 # %% Wire -> rtemis config translation ---------------------------------------
-# `R/config.R` is the single place the wire vocabulary (`setup_*()` formals, as
-# published by the `*.describe` methods and rendered by rtemislive's forms) is
-# mapped onto rtemis's config-object property names — the vocabulary the
+# `R/config.R` is the single place the wire vocabulary of `train` requests
+# (`setup_*()` formals) is mapped onto rtemis's config-object property names — the vocabulary the
 # schemas at schema.rtemis.org define. Everything else is delegated to rtemis's
 # own `.list_to_*()` reconstructors, so these tests pin the translation and the
 # fact that both vocabularies reach the same object.
@@ -242,57 +241,4 @@ test_that("build_super_config rejects an unmodelled key", {
       dt
     )
   )
-})
-
-
-# %% Enumerated choices in `*.describe` --------------------------------------
-# rtemis declares admissible values once, on the S7 property
-# (`prop_string(enum = ...)`). A `setup_*()` formal usually carries only the
-# default, so a describe schema built from formals alone reports no `choices`
-# and the client renders a free-text box where a select belongs. These pin the
-# property as the source.
-
-test_that("prop_enums reads enums off a config object's properties", {
-  enums <- rtemis.server:::prop_enums(rtemis::setup_Ranger())
-  expect_equal(
-    unlist(enums[["importance"]]),
-    c("none", "impurity", "impurity_corrected", "permutation")
-  )
-  # Non-enumerated and non-`prop_*` properties contribute nothing.
-  expect_null(enums[["num_trees"]])
-  expect_equal(rtemis.server:::prop_enums(NULL), list())
-})
-
-
-test_that(".live_build_schema surfaces choices for scalar-default enum args", {
-  by_name <- function(x) setNames(x, vapply(x, `[[`, character(1L), "name"))
-  schema <- by_name(rtemis.server:::.live_build_schema(
-    rtemis::setup_Ranger,
-    config = rtemis::setup_Ranger()
-  ))
-  # `setup_Ranger(importance = "impurity")` — scalar formal, enumerated
-  # property.
-  expect_equal(
-    unlist(schema[["importance"]][["choices"]]),
-    c("none", "impurity", "impurity_corrected", "permutation")
-  )
-  expect_equal(schema[["importance"]][["default"]], "impurity")
-  expect_false("choices" %in% names(schema[["num_trees"]]))
-})
-
-
-test_that(".live_build_schema still reads `match.arg`-style formals", {
-  # No shipped `setup_*` uses the bare `c("a", "b", ...)` formal idiom any
-  # longer (`setup_Resampler(type = )` was the last one, split into
-  # `setup_KFold()`/`setup_StratSub()`/etc., each with no such formal) --
-  # but a dispatcher with no single object to read against, whose `type`
-  # selects the subclass, is a shape `.live_build_schema` must still handle.
-  # Exercised here with a local stand-in rather than real production code.
-  synthetic_dispatcher <- function(type = c("KFold", "StratSub"), n = 10L) {
-    NULL
-  }
-  by_name <- function(x) setNames(x, vapply(x, `[[`, character(1L), "name"))
-  schema <- by_name(rtemis.server:::.live_build_schema(synthetic_dispatcher))
-  expect_true("KFold" %in% unlist(schema[["type"]][["choices"]]))
-  expect_equal(schema[["type"]][["default"]], "KFold")
 })

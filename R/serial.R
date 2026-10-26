@@ -44,236 +44,54 @@ encode_arrow_ipc <- function(df) {
 
 #' Build a long-format predictions table for a `Supervised` result
 #'
-#' Stacks training / validation / test predictions into a single
-#' `data.table` with `split`, `actual`, `predicted` columns (and, for
-#' classification with class probabilities, one `prob_<class>` column per
-#' level). Splits without observations are omitted.
+#' [rtemis::get_predictions()] of every stored sample, with the wire's column
+#' names: `split` (the sample), `fold` (the outer resample, resampled results
+#' only), `actual`, `predicted`, and one `prob_<class>` column per stored
+#' probability column of a classifier.
 #'
-#' This is the v1 schema for the `predictions` slice; the goal is a
-#' tidy, browser-friendly shape that DuckDB-WASM can query without
-#' reshape.
-#'
-#' @param sup `Supervised` object (Regression / Classification / SurvivalRes,
-#'   etc.). For non-Supervised inputs this errors - `job.result` callers
-#'   should switch on `inherits` first.
-#'
-#' @return `data.table` (zero rows is possible if no split has data).
-#'
-#' @author EDG
-#' @keywords internal
-#' @noRd
-predictions_table <- function(sup) {
-  if (inherits(sup, "rtemis::SupervisedRes")) {
-    return(predictions_table_resampled(sup))
-  }
-  if (!inherits(sup, "rtemis::Supervised")) {
-    rtemis.core::abort(
-      "`predictions` slice requires a `Supervised` or `SupervisedRes` result.",
-      class = "rtemislive_invalid_params"
-    )
-  }
-
-  splits <- list(
-    training = list(
-      actual = prop(sup, "y_training"),
-      predicted = prop(sup, "predicted_training")
-    ),
-    validation = list(
-      actual = prop(sup, "y_validation"),
-      predicted = prop(sup, "predicted_validation")
-    ),
-    test = list(
-      actual = prop(sup, "y_test"),
-      predicted = prop(sup, "predicted_test")
-    )
-  )
-
-  prob_props <- list(
-    training = "predicted_prob_training",
-    validation = "predicted_prob_validation",
-    test = "predicted_prob_test"
-  )
-  has_probs <- inherits(sup, "rtemis::Classification")
-
-  pieces <- list()
-  for (split_name in names(splits)) {
-    split <- splits[[split_name]]
-    actual <- split[["actual"]]
-    predicted <- split[["predicted"]]
-    if (is.null(actual) || is.null(predicted)) {
-      next
-    }
-    n <- length(predicted)
-    if (n == 0L) {
-      next
-    }
-    # Align actual to predicted length defensively.
-    if (length(actual) != n) {
-      actual <- rep(NA, n)
-    }
-    piece <- data.table::data.table(
-      split = split_name,
-      actual = actual,
-      predicted = predicted
-    )
-    if (has_probs) {
-      probs <- tryCatch(
-        prop(sup, prob_props[[split_name]]),
-        error = function(e) NULL
-      )
-      if (!is.null(probs) && (is.data.frame(probs) || is.matrix(probs))) {
-        probs <- as.data.frame(probs, stringsAsFactors = FALSE)
-        if (NROW(probs) == n) {
-          colnames(probs) <- paste0("prob_", colnames(probs))
-          piece <- cbind(piece, probs)
-        }
-      }
-    }
-    pieces[[split_name]] <- piece
-  }
-
-  if (length(pieces) == 0L) {
-    return(data.table::data.table(
-      split = character(0),
-      actual = numeric(0),
-      predicted = numeric(0)
-    ))
-  }
-  data.table::rbindlist(pieces, fill = TRUE, use.names = TRUE)
-}
-
-
-#' Long-format predictions table for a `SupervisedRes` result
-#'
-#' For resampled fits `y_training` / `predicted_training` / `y_test` /
-#' `predicted_test` are *lists* of per-fold vectors. We stack them into
-#' a single long table with `split`, `fold`, `actual`, `predicted`
-#' columns (no validation split exists for SupervisedRes).
-#'
-#' Probabilities are skipped for v1 - the per-fold structure makes it
-#' awkward to cbind heterogeneous prob columns and the UI doesn't need
-#' them yet.
-#'
-#' @param sup `SupervisedRes` object.
+#' @param sup `Supervised` or `SupervisedRes` object. Other inputs error -
+#'   `job.result` callers should switch on `inherits` first.
 #'
 #' @return `data.table`.
 #'
 #' @author EDG
 #' @keywords internal
 #' @noRd
-predictions_table_resampled <- function(sup) {
-  splits <- list(
-    training = list(
-      actual = prop(sup, "y_training"),
-      predicted = prop(sup, "predicted_training")
-    ),
-    test = list(
-      actual = prop(sup, "y_test"),
-      predicted = prop(sup, "predicted_test")
+predictions_table <- function(sup) {
+  if (
+    !inherits(sup, "rtemis::Supervised") &&
+      !inherits(sup, "rtemis::SupervisedRes")
+  ) {
+    rtemis.core::abort(
+      "`predictions` slice requires a `Supervised` or `SupervisedRes` result.",
+      class = "rtemislive_invalid_params"
     )
+  }
+  out <- rtemis::get_predictions(sup)
+  data.table::setnames(
+    out,
+    c("sample", "resample", "true"),
+    c("split", "fold", "actual"),
+    skip_absent = TRUE
   )
-
-  pieces <- list()
-  for (split_name in names(splits)) {
-    split <- splits[[split_name]]
-    actual_list <- split[["actual"]]
-    pred_list <- split[["predicted"]]
-    if (is.null(actual_list) || is.null(pred_list)) {
-      next
-    }
-    if (!is.list(actual_list)) {
-      actual_list <- list(actual_list)
-    }
-    if (!is.list(pred_list)) {
-      pred_list <- list(pred_list)
-    }
-    fold_labels <- names(pred_list)
-    if (is.null(fold_labels) || any(!nzchar(fold_labels))) {
-      fold_labels <- as.character(seq_along(pred_list))
-    }
-    for (i in seq_along(pred_list)) {
-      predicted <- pred_list[[i]]
-      actual <- if (i <= length(actual_list)) actual_list[[i]] else NULL
-      n <- length(predicted)
-      if (n == 0L) {
-        next
-      }
-      if (is.null(actual) || length(actual) != n) {
-        actual <- rep(NA, n)
-      }
-      pieces[[length(pieces) + 1L]] <- data.table::data.table(
-        split = split_name,
-        fold = fold_labels[i],
-        actual = actual,
-        predicted = predicted
-      )
-    }
-  }
-
-  if (length(pieces) == 0L) {
-    return(data.table::data.table(
-      split = character(0),
-      fold = character(0),
-      actual = numeric(0),
-      predicted = numeric(0)
-    ))
-  }
-  data.table::rbindlist(pieces, fill = TRUE, use.names = TRUE)
+  out
 }
 
 
 # %% ROC curve table ---------------------------------------------------------
 
-#' Pool per-fold prediction lists (resampled fits) into single objects
-#'
-#' Single fits pass through unchanged. `SupervisedRes` fits store `y_*` /
-#' `predicted_prob_*` as per-fold lists; concatenate the labels and stack
-#' the probabilities (vector -> concat, matrix -> rbind) so one ROC curve
-#' summarises the pooled predictions for a split.
-#'
-#' @param y Factor, or list of per-fold factors.
-#' @param prob Numeric vector / matrix, or list of per-fold such.
-#'
-#' @return `list(y, prob)`.
-#'
-#' @author EDG
-#' @keywords internal
-#' @noRd
-roc_pool_split <- function(y, prob) {
-  if (is.list(y) && !is.data.frame(y)) {
-    lv <- levels(y[[1L]])
-    y <- factor(unlist(lapply(y, as.character), use.names = FALSE), levels = lv)
-  }
-  if (is.list(prob) && !is.data.frame(prob) && !is.matrix(prob)) {
-    prob <- if (length(prob) > 0L && !is.null(dim(prob[[1L]]))) {
-      do.call(rbind, prob)
-    } else {
-      unlist(prob, use.names = FALSE)
-    }
-  }
-  list(y = y, prob = prob)
-}
-
-
 #' Build a long-format ROC-curve table for a classification result
 #'
-#' Marshals the per-split true labels and predicted probabilities and defers
-#' the actual curve computation to [rtemis::roc_curve()] (binary: one curve
-#' for the positive class; multiclass: one-vs-rest per class). Resampled fits
-#' pool their per-fold predictions per split before computing. This is the
-#' transport counterpart of the `varimp` slice (which calls
-#' `rtemis::get_varimp`): all ROC logic lives in `rtemis`.
-#'
-#' Schema: `split`, `class`, `fold`, `fpr`, `tpr`, `auc` (the AUC is constant
-#' within a split/class/fold group, repeated per vertex). The `fold` column is
-#' `"aggregate"` for the curve pooled across all resamples and `"1"`, `"2"`,
-#' ... for the per-resample curves (resampled fits only; single fits emit only
-#' the aggregate row). Regression results and classifiers without predicted
-#' probabilities yield a zero-row table.
+#' [rtemis::roc_table()] of every sample with predicted probabilities, the data
+#' `rtemis::plot_roc()` draws, under the wire's column names: `split`, `class`,
+#' `fold`, `fpr`, `tpr`, `auc`. `fold` is `"aggregate"` for the curve pooled
+#' across all resamples and the resample identifier for the per-resample
+#' curves of a resampled fit; a single fit has the aggregate curves only.
+#' Regression results and classifiers without predicted probabilities yield a
+#' zero-row table.
 #'
 #' @param sup `Supervised` / `SupervisedRes` object.
-#' @param max_points Integer: Cap on curve vertices per group (down-sampled in
-#'   `rtemis::roc_curve` so wide datasets ship a compact line).
+#' @param max_points Integer: Cap on curve vertices per curve.
 #'
 #' @return `data.table` with columns `split`, `class`, `fold`, `fpr`, `tpr`,
 #'   `auc`.
@@ -282,6 +100,7 @@ roc_pool_split <- function(y, prob) {
 #' @keywords internal
 #' @noRd
 roc_table <- function(sup, max_points = 1000L) {
+  columns <- c("split", "class", "fold", "fpr", "tpr", "auc")
   empty <- data.table::data.table(
     split = character(0),
     class = character(0),
@@ -291,76 +110,34 @@ roc_table <- function(sup, max_points = 1000L) {
     auc = numeric(0)
   )
   if (
-    !inherits(sup, "rtemis::Supervised") &&
-      !inherits(sup, "rtemis::SupervisedRes")
+    !inherits(sup, "rtemis::Classification") &&
+      !inherits(sup, "rtemis::ClassificationRes")
   ) {
     return(empty)
   }
-
-  splits <- list(
-    training = c(y = "y_training", prob = "predicted_prob_training"),
-    validation = c(y = "y_validation", prob = "predicted_prob_validation"),
-    test = c(y = "y_test", prob = "predicted_prob_test")
+  # rtemis raises `rtemis_null_input` for a classifier that stores no
+  # predicted probabilities.
+  aggregate <- tryCatch(
+    rtemis::roc_table(sup, max_points = max_points),
+    rtemis_null_input = function(e) NULL
   )
-
-  # Compute a single ROC curve for one (labels, probs) pair and tag its rows
-  # with the owning `split` and `fold`. NULL when the curve can't be formed.
-  curve_for <- function(y, prob, split_name, fold_label) {
-    if (!is.factor(y)) {
-      return(NULL)
-    }
-    curve <- tryCatch(
-      rtemis::roc_curve(y, prob, max_points = max_points),
-      error = function(e) NULL
-    )
-    if (is.null(curve) || NROW(curve) == 0L) {
-      return(NULL)
-    }
-    dt <- data.table::as.data.table(curve)
-    dt[, let(split = split_name, fold = fold_label)]
-    dt
-  }
-
-  pieces <- list()
-  for (split_name in names(splits)) {
-    sp <- splits[[split_name]]
-    y <- tryCatch(prop(sup, sp[["y"]]), error = function(e) NULL)
-    prob <- tryCatch(prop(sup, sp[["prob"]]), error = function(e) NULL)
-    if (is.null(y) || is.null(prob)) {
-      next
-    }
-
-    # Aggregate curve over predictions pooled across all resamples.
-    pooled <- roc_pool_split(y, prob)
-    agg <- curve_for(pooled[["y"]], pooled[["prob"]], split_name, "aggregate")
-    if (!is.null(agg)) {
-      pieces[[length(pieces) + 1L]] <- agg
-    }
-
-    # Per-resample curves: present only when the fit stores per-fold prediction
-    # lists (`SupervisedRes`). One curve per fold, tagged with its fold label.
-    if (is.list(y) && !is.data.frame(y)) {
-      fold_labels <- names(y)
-      if (is.null(fold_labels) || any(!nzchar(fold_labels))) {
-        fold_labels <- as.character(seq_along(y))
-      }
-      prob_is_list <- is.list(prob) && !is.data.frame(prob) && !is.matrix(prob)
-      for (i in seq_along(y)) {
-        prob_i <- if (prob_is_list) prob[[i]] else prob
-        fc <- curve_for(y[[i]], prob_i, split_name, fold_labels[i])
-        if (!is.null(fc)) {
-          pieces[[length(pieces) + 1L]] <- fc
-        }
-      }
-    }
-  }
-
-  if (length(pieces) == 0L) {
+  if (is.null(aggregate)) {
     return(empty)
   }
-  out <- data.table::rbindlist(pieces, use.names = TRUE)
-  data.table::setcolorder(out, c("split", "class", "fold", "fpr", "tpr", "auc"))
-  out[]
+  aggregate[, let(fold = "aggregate")]
+  pieces <- list(aggregate)
+  if (inherits(sup, "rtemis::ClassificationRes")) {
+    per_resample <- rtemis::roc_table(
+      sup,
+      variant = "per_resample",
+      max_points = max_points
+    )
+    data.table::setnames(per_resample, "resample", "fold")
+    pieces[[2L]] <- per_resample
+  }
+  out <- data.table::rbindlist(pieces, use.names = TRUE, fill = TRUE)
+  data.table::setnames(out, "sample", "split")
+  out[, columns, with = FALSE]
 }
 
 
@@ -444,11 +221,10 @@ report_markdown <- function(sup, report = c("review", "writeup")) {
 
 #' Execution timeline table for the `session` slice
 #'
-#' Flattens the observability session captured on a `Supervised` /
-#' `SupervisedRes` result (`@session`, recorded by `rtemis::train()`) into the
-#' timeline table produced by [rtemis::session_timeline()]: one row per
-#' execution node in depth-first order, with columns `label`, `start`, `end`
-#' (milliseconds from session start), `kind`, `status`, `failed`, and `tip`.
+#' [rtemis::session_timeline()] of a `Supervised` / `SupervisedRes` result:
+#' one row per execution node of the session `rtemis::train()` recorded, in
+#' depth-first order, with columns `label`, `start`, `end` (milliseconds from
+#' session start), `kind`, `status`, `failed`, and `tip`.
 #' The per-kind fill colors ship separately in the slice pointer (see
 #' `handle_job_result`), via [rtemis::session_kind_colors()].
 #'
@@ -467,40 +243,30 @@ session_table <- function(sup) {
   ) {
     return(NULL)
   }
-  session <- prop(sup, "session")
-  if (is.null(session) || length(prop(session, "events")) == 0L) {
+  timeline <- rtemis::session_timeline(sup)
+  if (NROW(timeline) == 0L) {
     return(NULL)
   }
-  rtemis::session_timeline(session)
+  timeline
 }
 
 
 # %% Decomposition slices ---------------------------------------------------
 
-#' Projection matrix for the `transformed` slice
+#' Component scores for the `transformed` slice
 #'
-#' Extracts `prop(result, "transformed")` from a `Decomposition` and
-#' wraps it as a data.table. Column names are preserved when the
-#' decomposition backend names them (e.g. `PC1`, `PC2`, ...); otherwise
-#' synthesised as `V1`, `V2`, ...
+#' [rtemis::transformed()] of a `Decomposition`: one row per fitted case, one
+#' column per component, named by the decomposition.
 #'
 #' @param dec `Decomposition`.
 #'
-#' @return data.table or NULL when no projection is available.
+#' @return data.table.
 #'
 #' @author EDG
 #' @keywords internal
 #' @noRd
 transformed_table <- function(dec) {
-  m <- tryCatch(prop(dec, "transformed"), error = function(e) NULL)
-  if (is.null(m)) {
-    return(NULL)
-  }
-  m <- as.matrix(m)
-  if (is.null(colnames(m))) {
-    colnames(m) <- paste0("V", seq_len(NCOL(m)))
-  }
-  data.table::as.data.table(m)
+  rtemis::transformed(dec)
 }
 
 
@@ -531,29 +297,20 @@ loadings_table <- function(dec) {
 
 #' Cluster assignments for the `assignments` slice
 #'
-#' Extracts `prop(result, "clusters")` from a `Clustering` and wraps it
-#' as a one-column data.table named `cluster`. Row order matches the
-#' input data row order, so the client can left-join the assignment
-#' column back to the parent table via `rowid` (analogous to the
-#' decomposition `transformed` slice).
+#' [rtemis::clusters()] of a `Clustering` as a one-column data.table named
+#' `cluster`. Row order matches the input data row order, so the client can
+#' left-join the assignment column back to the parent table via `rowid`, as
+#' for the decomposition `transformed` slice.
 #'
 #' @param clu `Clustering`.
 #'
-#' @return data.table with a single integer column `cluster`, or NULL
-#'   when no assignments are available.
+#' @return data.table with a single integer column `cluster`.
 #'
 #' @author EDG
 #' @keywords internal
 #' @noRd
 assignments_table <- function(clu) {
-  v <- tryCatch(prop(clu, "clusters"), error = function(e) NULL)
-  if (is.null(v)) {
-    return(NULL)
-  }
-  if (is.list(v)) {
-    v <- unlist(v, use.names = FALSE)
-  }
-  data.table::data.table(cluster = as.integer(v))
+  data.table::data.table(cluster = rtemis::clusters(clu))
 }
 
 
