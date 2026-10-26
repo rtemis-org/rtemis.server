@@ -222,23 +222,14 @@ load_model_job <- function(session, bytes) {
     )
   }
 
-  # An uploaded model's `@session` (when it has one -- rtemis versions
-  # before observability capture existed, or a session that recorded no
-  # events, leave it NULL) holds the *original* run's wall-clock bounds.
-  # Preferring those over "now" is what keeps the badge's elapsed time
-  # honest -- otherwise submitted/started/completed all collapse to the
-  # instant of upload and every loaded model reads "Done in 0.00s".
-  obs_session <- tryCatch(prop(result, "session"), error = function(e) NULL)
-  run_started <- if (is.null(obs_session)) {
-    NULL
-  } else {
-    prop(obs_session, "started")
-  }
-  run_finished <- if (is.null(obs_session)) {
-    NULL
-  } else {
-    prop(obs_session, "finished")
-  }
+  # The run record's provenance holds the *original* run's wall-clock bounds
+  # (empty when the model carries no session). Preferring those over "now"
+  # keeps the badge's elapsed time honest: otherwise submitted, started, and
+  # completed all collapse to the instant of upload and every loaded model
+  # reads "Done in 0.00s".
+  provenance <- rtemis::record(result)[["provenance"]]
+  run_started <- parse_record_time(provenance[["started"]])
+  run_finished <- parse_record_time(provenance[["finished"]])
 
   job_id <- new_job_id()
   now <- Sys.time()
@@ -801,4 +792,24 @@ record_job_progress <- function(job, progress) {
   }
   job[["progress"]] <- cur
   invisible(job)
+}
+
+
+#' Parse a run record timestamp
+#'
+#' Run records write times as ISO 8601 UTC strings with milliseconds, and an
+#' empty string when the run recorded none.
+#'
+#' @param x Optional character scalar: Timestamp.
+#'
+#' @return POSIXct, or NULL for an empty or absent timestamp.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+parse_record_time <- function(x) {
+  if (is.null(x) || !nzchar(x)) {
+    return(NULL)
+  }
+  as.POSIXct(x, format = "%Y-%m-%dT%H:%M:%OSZ", tz = "UTC")
 }

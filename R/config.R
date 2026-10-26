@@ -71,11 +71,10 @@
 
 #' Normalize wire params to the rtemis config vocabulary
 #'
-#' The wire speaks `setup_*()` formals — that is what the `*.describe` methods
-#' publish and what rtemislive's forms are generated from. rtemis's config
-#' objects, and the schemas at schema.rtemis.org, speak *object property*
-#' names. The two vocabularies coincide, so this function performs no renaming:
-#' it collapses scalar lists and normalizes one empty-string value.
+#' rtemislive's forms are generated from the schemas at schema.rtemis.org, which
+#' speak the *object property* names of rtemis's config objects, and these
+#' coincide with the `setup_*()` formals. This function therefore performs no
+#' renaming: it collapses scalar lists and normalizes one empty-string value.
 #'
 #' rtemis's `.list_to_*()` reconstructors now **reject** a key the config does
 #' not declare, so transport params must be removed here rather than left for
@@ -114,9 +113,8 @@
 
 #' Fold the wire's `algorithm` into its flat hyperparameter map
 #'
-#' The wire speaks `setup_*()` formals: `algorithm` names the learner and
-#' `hyperparameters` is its flat name -> value map, which is what the
-#' `algorithm.describe` schema publishes and what rtemislive's form emits. A
+#' On the wire, `algorithm` names the learner and `hyperparameters` is its flat
+#' name -> value map, which is what rtemislive's form emits. A
 #' `SuperConfig` names the algorithm once, inside `hyperparameters`, as the
 #' discriminator beside the settings -- `{"algorithm": "Ranger", "num_trees":
 #' 500}`, the shape `hyperparameters/r/v1` declares. Folding it here leaves
