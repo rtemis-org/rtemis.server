@@ -1,55 +1,23 @@
 # Dev
 __dev/
-__validation/
-dev/
-__out/
-specs/
+AGENTS.md
 
-# Mac OS
+# macOS
 .DS_Store
 
-# VS Code
-.vscode
+# IDEs
+.vscode/
 *.code-workspace
+.zed/
 
-# R History files
-.Rhistory
-.Rapp.history
-
-# Output files from R CMD build
-/*.tar.gz
-
-# Output files from R CMD check
-/*.Rcheck/
-
-# pkgdown
+# R
+*.tar.gz
+*.Rcheck/
+.lintr
+air.toml
+revdep/
+cran-comments.md
 _pkgdown.yml
 pkgdown/
-
-# Air
-air.toml
-
-# produced vignettes
-vignettes/*.html
-vignettes/*.pdf
-
-# Temporary files created by R markdown
-*.utf8.md
-*.knit.md
-
-# lintr
-.lintr
-
-# CRAN
-cran-comments.md
-
-# Manual
-*.pdf
-
-# Assistants
-AGENTS.md
-.claude/
-SKILL.md
-
-# Local coverage reports
-coverage/
+docs/
+*.html

@@ -28,7 +28,7 @@ Defaults to \code{5757}, or the value of \code{RTEMISLIVE_PORT} if set.}
 Server refuses to start on any other address.}
 
 \item{n_daemons}{Integer: Number of mirai worker processes. Default
-\code{1L}: rtemis training jobs already parallelise internally (OpenMP
+\code{1L}: rtemis training jobs already parallelize internally (OpenMP
 for gradient boosters, parallel tuning, parallel outer resampling),
 so a single daemon runs one job at a time with full core access.
 Increase only when you want multiple simultaneous jobs and accept

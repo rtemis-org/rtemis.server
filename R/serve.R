@@ -39,7 +39,7 @@
 #' @param host Character: Bind address. Defaults to `"127.0.0.1"`.
 #'   Server refuses to start on any other address.
 #' @param n_daemons Integer: Number of mirai worker processes. Default
-#'   `1L`: rtemis training jobs already parallelise internally (OpenMP
+#'   `1L`: rtemis training jobs already parallelize internally (OpenMP
 #'   for gradient boosters, parallel tuning, parallel outer resampling),
 #'   so a single daemon runs one job at a time with full core access.
 #'   Increase only when you want multiple simultaneous jobs and accept
