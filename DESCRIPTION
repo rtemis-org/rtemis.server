@@ -6,6 +6,8 @@ Authors@R: person(given = "E.D.", family = "Gennatas", role = c("aut", "cre", "c
     email = "gennatas@gmail.com", comment = c(ORCID = "0000-0001-9280-3609"))
 Description: Create a websocket server to run 'rtemis' functions from an 'rtemislive' client.
 License: BSD_3_clause + file LICENSE
+Encoding: UTF-8
+Language: en-US
 URL: https://www.rtemis.org, https://live.rtemis.org
 BugReports: https://github.com/rtemis-org/rtemis.server/issues
 ByteCompile: yes
@@ -28,8 +30,6 @@ Imports:
 Suggests:
     callr,
     testthat (>= 3.0.0)
-Additional_repositories: https://rtemis-org.r-universe.dev
-Encoding: UTF-8
 Config/testthat/edition: 3
 Roxygen: list(markdown = TRUE)
 LazyData: true
