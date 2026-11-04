@@ -1,28 +1,17 @@
 # test_serve_integration.R
-# ::rtemis::
+# ::rtemis.server::
 # 2026- EDG rtemis.org
 #
 # Lifecycle smoke test for `serve()`.
 #
-# Full wire-protocol exercising the WebSocket layer requires a browser-
-# compatible WS client. nanonext's `stream()` speaks NNG-over-WebSocket,
-# which is NOT browser-compatible and cannot interoperate with our
-# `handler_ws` endpoint. The right tool for that test is the
-# `websocket` R package (not in rtemis's deps); the corresponding test
-# is sketched in `__dev/` and is part of the manual QA pass.
-#
-# What this file verifies:
-#
-# - `serve()` starts in a fresh R subprocess without
-#   crashing.
-# - The server binds its TCP port (we open a plain socket to it).
-# - The subprocess stays alive long enough to handle the smoke.
-#
-# Full request/response coverage is provided by the dispatcher tests in
-# this directory, which exercise every handler with synthetic frames.
+# The test starts `serve()` in a separate `Rscript` process, checks that the
+# server binds its TCP port with a plain socket connection, and stops the
+# process by PID with `tools::pskill()`. nanonext's `stream()` speaks
+# NNG-over-WebSocket, a framing the `handler_ws` endpoint does not accept, so
+# this file does not exchange WebSocket frames. The dispatcher tests in this
+# directory exercise every handler with synthetic frames.
 
 skip_on_cran()
-skip_if_not_installed("callr")
 
 
 # Helpers --------------------------------------------------------------------
@@ -72,26 +61,39 @@ can_connect <- function(port, timeout_s = 0.5) {
 
 test_that("serve starts in a subprocess and binds its port", {
   port <- pick_port()
-
-  bg <- callr::r_bg(
-    function(port) {
-      library(rtemis)
-      rtemis.server::serve(
-        port = port,
-        token = "smoke-test-toke-9999",
-        n_daemons = 1L,
-        verbosity = 0L
+  pid_file <- tempfile("serve-pid-")
+  err_file <- tempfile("serve-stderr-")
+  script <- tempfile("serve-", fileext = ".R")
+  writeLines(
+    c(
+      paste0("writeLines(as.character(Sys.getpid()), ", deparse(pid_file), ")"),
+      "library(rtemis)",
+      paste0(
+        "rtemis.server::serve(port = ",
+        port,
+        "L, token = \"smoke-test-toke-9999\", n_daemons = 1L, verbosity = 0L)"
       )
-    },
-    args = list(port = port),
-    supervise = TRUE
+    ),
+    script
   )
-  on.exit(
-    {
-      tryCatch(bg$kill(), error = function(e) NULL)
-    },
-    add = TRUE
+  on.exit(unlink(c(pid_file, err_file, script)), add = TRUE)
+
+  system2(
+    file.path(R.home("bin"), "Rscript"),
+    shQuote(script),
+    stdout = FALSE,
+    stderr = err_file,
+    wait = FALSE
   )
+  started <- wait_until(
+    function() file.exists(pid_file) && length(readLines(pid_file)) == 1L,
+    timeout = 15
+  )
+  expect_false(is.na(started), info = "Server process did not start.")
+  if (!is.na(started)) {
+    pid <- as.integer(readLines(pid_file))
+    on.exit(tools::pskill(pid, tools::SIGTERM), add = TRUE, after = FALSE)
+  }
 
   elapsed <- wait_until(function() can_connect(port), timeout = 15)
   expect_false(
@@ -100,14 +102,13 @@ test_that("serve starts in a subprocess and binds its port", {
       "Server did not bind on port ",
       port,
       "\nstderr:\n",
-      paste(bg$read_all_error(), collapse = "\n")
+      paste(readLines(err_file, warn = FALSE), collapse = "\n")
     )
   )
-  expect_true(bg$is_alive(), info = "Server crashed after binding.")
 
-  # Confirm the subprocess is still healthy ~half a second later
+  # The port still accepts connections half a second after binding.
   Sys.sleep(0.5)
-  expect_true(bg$is_alive(), info = "Server died shortly after start.")
+  expect_true(can_connect(port), info = "Server died shortly after start.")
 })
 
 
