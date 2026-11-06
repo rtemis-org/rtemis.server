@@ -567,6 +567,7 @@ test_that("job.result unsupported slice -> invalid_params", {
   )
   expect_false(resp[["ok"]])
   expect_equal(resp[["error"]][["code"]], "invalid_params")
+  expect_match(resp[["error"]][["message"]], "`roc`, `pr`", fixed = TRUE)
 })
 
 test_that("job.result `predictions` on a non-Supervised result -> invalid_params", {

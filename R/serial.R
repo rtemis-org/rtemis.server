@@ -78,17 +78,64 @@ predictions_table <- function(sup) {
 }
 
 
-# %% ROC curve table ---------------------------------------------------------
+# %% Threshold curve tables --------------------------------------------------
+
+#' Build a long-format threshold-curve table for a classification result
+#'
+#' One definition of how a curve view of rtemis becomes a wire table: `fold` is
+#' `"aggregate"` for the curve pooled across all resamples and the resample
+#' identifier for the per-resample curves of a resampled fit; a single fit has
+#' the aggregate curves only. Regression results and classifiers without
+#' predicted probabilities yield a zero-row table.
+#'
+#' @param sup `Supervised` / `SupervisedRes` object.
+#' @param view Function: [rtemis::roc_table()] or [rtemis::pr_table()].
+#' @param empty `data.table`: Zero-row table naming the wire columns.
+#' @param max_points Integer: Cap on curve vertices per curve.
+#'
+#' @return `data.table` with the columns of `empty`.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+curve_wire_table <- function(sup, view, empty, max_points) {
+  if (
+    !inherits(sup, "rtemis::Classification") &&
+      !inherits(sup, "rtemis::ClassificationRes")
+  ) {
+    return(empty)
+  }
+  # rtemis raises `rtemis_null_input` for a classifier that stores no
+  # predicted probabilities.
+  aggregate <- tryCatch(
+    view(sup, max_points = max_points),
+    rtemis_null_input = function(e) NULL
+  )
+  if (is.null(aggregate)) {
+    return(empty)
+  }
+  aggregate[, let(fold = "aggregate")]
+  pieces <- list(aggregate)
+  if (inherits(sup, "rtemis::ClassificationRes")) {
+    per_resample <- view(
+      sup,
+      variant = "per_resample",
+      max_points = max_points
+    )
+    data.table::setnames(per_resample, "resample", "fold")
+    pieces[[2L]] <- per_resample
+  }
+  out <- data.table::rbindlist(pieces, use.names = TRUE, fill = TRUE)
+  data.table::setnames(out, "sample", "split")
+  out[, names(empty), with = FALSE]
+}
+
 
 #' Build a long-format ROC-curve table for a classification result
 #'
 #' [rtemis::roc_table()] of every sample with predicted probabilities, the data
 #' `rtemis::plot_roc()` draws, under the wire's column names: `split`, `class`,
-#' `fold`, `fpr`, `tpr`, `auc`. `fold` is `"aggregate"` for the curve pooled
-#' across all resamples and the resample identifier for the per-resample
-#' curves of a resampled fit; a single fit has the aggregate curves only.
-#' Regression results and classifiers without predicted probabilities yield a
-#' zero-row table.
+#' `fold`, `fpr`, `tpr`, `auc`.
 #'
 #' @param sup `Supervised` / `SupervisedRes` object.
 #' @param max_points Integer: Cap on curve vertices per curve.
@@ -100,44 +147,52 @@ predictions_table <- function(sup) {
 #' @keywords internal
 #' @noRd
 roc_table <- function(sup, max_points = 1000L) {
-  columns <- c("split", "class", "fold", "fpr", "tpr", "auc")
-  empty <- data.table::data.table(
-    split = character(0),
-    class = character(0),
-    fold = character(0),
-    fpr = numeric(0),
-    tpr = numeric(0),
-    auc = numeric(0)
+  curve_wire_table(
+    sup,
+    rtemis::roc_table,
+    data.table::data.table(
+      split = character(0),
+      class = character(0),
+      fold = character(0),
+      fpr = numeric(0),
+      tpr = numeric(0),
+      auc = numeric(0)
+    ),
+    max_points
   )
-  if (
-    !inherits(sup, "rtemis::Classification") &&
-      !inherits(sup, "rtemis::ClassificationRes")
-  ) {
-    return(empty)
-  }
-  # rtemis raises `rtemis_null_input` for a classifier that stores no
-  # predicted probabilities.
-  aggregate <- tryCatch(
-    rtemis::roc_table(sup, max_points = max_points),
-    rtemis_null_input = function(e) NULL
+}
+
+
+#' Build a long-format precision-recall table for a classification result
+#'
+#' [rtemis::pr_table()] of every sample with predicted probabilities, the data
+#' `rtemis::plot_pr()` draws, under the wire's column names: `split`, `class`,
+#' `fold`, `recall`, `precision`, `ap`, `prevalence`.
+#'
+#' @param sup `Supervised` / `SupervisedRes` object.
+#' @param max_points Integer: Cap on curve vertices per curve.
+#'
+#' @return `data.table` with columns `split`, `class`, `fold`, `recall`,
+#'   `precision`, `ap`, `prevalence`.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+pr_table <- function(sup, max_points = 1000L) {
+  curve_wire_table(
+    sup,
+    rtemis::pr_table,
+    data.table::data.table(
+      split = character(0),
+      class = character(0),
+      fold = character(0),
+      recall = numeric(0),
+      precision = numeric(0),
+      ap = numeric(0),
+      prevalence = numeric(0)
+    ),
+    max_points
   )
-  if (is.null(aggregate)) {
-    return(empty)
-  }
-  aggregate[, let(fold = "aggregate")]
-  pieces <- list(aggregate)
-  if (inherits(sup, "rtemis::ClassificationRes")) {
-    per_resample <- rtemis::roc_table(
-      sup,
-      variant = "per_resample",
-      max_points = max_points
-    )
-    data.table::setnames(per_resample, "resample", "fold")
-    pieces[[2L]] <- per_resample
-  }
-  out <- data.table::rbindlist(pieces, use.names = TRUE, fill = TRUE)
-  data.table::setnames(out, "sample", "split")
-  out[, columns, with = FALSE]
 }
 
 

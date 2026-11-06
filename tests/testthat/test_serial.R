@@ -242,6 +242,68 @@ test_that("roc_table emits an aggregate plus one curve per resample", {
 })
 
 
+# pr_table ------------------------------------------------------------------
+
+pr_wire_columns <- c(
+  "split",
+  "class",
+  "fold",
+  "recall",
+  "precision",
+  "ap",
+  "prevalence"
+)
+
+test_that("pr_table returns an empty typed table on non-Supervised", {
+  rt <- pr_table(1L)
+  expect_s3_class(rt, "data.table")
+  expect_equal(names(rt), pr_wire_columns)
+  expect_equal(nrow(rt), 0L)
+})
+
+test_that("pr_table emits an aggregate plus one curve per resample", {
+  skip_if_not_installed("rtemis")
+
+  set.seed(1L)
+  n <- 120L
+  dt <- data.frame(a = rnorm(n), b = rnorm(n))
+  lp <- 1.2 * dt[["a"]] - 0.8 * dt[["b"]]
+  dt[["y"]] <- factor(ifelse(plogis(lp) > runif(n), "pos", "neg"))
+
+  fit <- rtemis::train(
+    dt,
+    hyperparameters = rtemis::setup_GLM(),
+    outer_resampling_config = rtemis::setup_KFold(
+      n_resamples = 3L,
+      seed = 1L
+    ),
+    verbosity = 0L
+  )
+
+  rt <- pr_table(fit)
+  expect_equal(names(rt), pr_wire_columns)
+
+  test_rows <- rt[split == "test"]
+  expect_true("aggregate" %in% test_rows[["fold"]])
+  per_fold <- unique(test_rows[fold != "aggregate"][["fold"]])
+  expect_equal(length(per_fold), 3L)
+
+  # AP and prevalence are constant within a split/class/fold group.
+  by_group <- test_rows[,
+    .(n_ap = length(unique(ap)), n_prevalence = length(unique(prevalence))),
+    by = .(class, fold)
+  ]
+  expect_true(all(by_group[["n_ap"]] == 1L))
+  expect_true(all(by_group[["n_prevalence"]] == 1L))
+
+  # The pooled curve is the one rtemis::plot_pr() draws.
+  aggregate_rows <- test_rows[fold == "aggregate"]
+  drawn <- rtemis::pr_table(fit, "test", max_points = 1000L)
+  expect_equal(aggregate_rows[["recall"]], drawn[["recall"]])
+  expect_equal(aggregate_rows[["precision"]], drawn[["precision"]])
+})
+
+
 # make_response_payload ----------------------------------------------------
 
 test_that("make_response_payload bundles header + payload", {
@@ -332,6 +394,85 @@ test_that("job.result `predictions` returns Arrow IPC payload for a trained Regr
   expect_true(all(result[["columns"]] %in% names(back)))
 })
 
+
+# job.result `pr` end-to-end -----------------------------------------------
+
+# Runs one `train` job and returns the response to `job.result` for `slice`.
+train_job_slice <- function(dt, slice) {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  server <- make_server()
+  conn <- authed_conn(server, attach_session = "s")
+  upload <- dispatch_request(
+    conn,
+    make_request(
+      "data.upload",
+      params = list(name = "small"),
+      payload = ipc_bytes(dt)
+    ),
+    server
+  )
+  submitted <- dispatch_request(
+    conn,
+    make_request(
+      "train",
+      params = list(
+        data_handle = upload[["result"]][["data_handle"]],
+        algorithm = "GLM"
+      )
+    ),
+    server
+  )
+  job_id <- submitted[["result"]][["job_id"]]
+  job <- get_session_by_name("s")[["jobs"]][[job_id]]
+  wait_for_resolved(job)
+  check_job_resolved(job)
+  expect_equal(job[["status"]], "complete")
+  dispatch_request(
+    conn,
+    make_request("job.result", params = list(job_id = job_id, slice = slice)),
+    server
+  )
+}
+
+test_that("job.result `pr` sends the curves of a classification fit", {
+  skip_if_not_installed("rtemis")
+  skip_if_not_installed("nanoarrow")
+  set.seed(2027L)
+  dt <- data.table(a = rnorm(80), b = rnorm(80))
+  dt[, y := factor(ifelse(a + rnorm(80) > 0, "pos", "neg"))]
+
+  resp <- train_job_slice(dt, "pr")
+
+  expect_named(resp, c("header", "payload"))
+  expect_true(resp[["header"]][["ok"]])
+  result <- resp[["header"]][["result"]]
+  expect_equal(result[["format"]], "arrow-ipc")
+  expect_equal(
+    unlist(result[["columns"]]),
+    c("split", "class", "fold", "recall", "precision", "ap", "prevalence")
+  )
+  back <- decode_arrow_ipc(resp[["payload"]])
+  expect_equal(nrow(back), result[["rows"]])
+  expect_identical(unique(as.character(back[["fold"]])), "aggregate")
+  expect_identical(unique(as.character(back[["class"]])), "pos")
+  expect_equal(min(back[["recall"]]), 0)
+  expect_equal(max(back[["recall"]]), 1)
+  expect_equal(unique(back[["prevalence"]]), mean(dt[["y"]] == "pos"))
+})
+
+test_that("job.result `pr` sends an empty pointer for a regression fit", {
+  skip_if_not_installed("rtemis")
+  set.seed(2027L)
+  dt <- data.table(a = rnorm(60), b = rnorm(60))
+  dt[, y := a + rnorm(60)]
+
+  resp <- train_job_slice(dt, "pr")
+
+  expect_true(resp[["ok"]])
+  expect_equal(resp[["result"]][["rows"]], 0L)
+  expect_null(resp[["payload"]])
+})
 
 # job.result `metrics` end-to-end ------------------------------------------
 

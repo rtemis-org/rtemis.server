@@ -1344,8 +1344,10 @@ handle_job_cancel <- function(conn, frame, server) {
 #'   predictions table.
 #' - `roc`: small JSON pointer + Arrow IPC of the long-format ROC-curve
 #'   table (`split`, `class`, `fold`, `fpr`, `tpr`, `auc`) for classification
-#'   fits, computed by `rtemis::roc_curve`; `fold` is `"aggregate"` for the
-#'   pooled curve and per-resample labels otherwise. Empty pointer otherwise.
+#'   fits, from `rtemis::roc_table`; `fold` is `"aggregate"` for the pooled
+#'   curve and per-resample labels otherwise. Empty pointer otherwise.
+#' - `pr`: as `roc`, for the precision-recall table (`split`, `class`, `fold`,
+#'   `recall`, `precision`, `ap`, `prevalence`) from `rtemis::pr_table`.
 #' - `session`: small JSON pointer + Arrow IPC of the execution-timeline
 #'   table (`label`, `start`, `end`, `kind`, `status`, `failed`, `tip`) built
 #'   by `rtemis::session_timeline` from the model's observability session;
@@ -1459,9 +1461,9 @@ handle_job_result <- function(conn, frame, server) {
       payload
     ))
   }
-  if (slice == "roc") {
-    roc_dt <- roc_table(result)
-    if (is.null(roc_dt) || NROW(roc_dt) == 0L) {
+  if (slice %in% c("roc", "pr")) {
+    curve_dt <- if (slice == "roc") roc_table(result) else pr_table(result)
+    if (is.null(curve_dt) || NROW(curve_dt) == 0L) {
       # Not a classification fit, or no predicted probabilities: empty
       # pointer (no payload) so the client distinguishes it from an error.
       return(make_response(
@@ -1469,13 +1471,13 @@ handle_job_result <- function(conn, frame, server) {
         list(rows = 0L, cols = 0L, columns = list(), format = "arrow-ipc")
       ))
     }
-    payload <- encode_arrow_ipc(roc_dt)
+    payload <- encode_arrow_ipc(curve_dt)
     return(make_response_payload(
       req_id,
       list(
-        rows = NROW(roc_dt),
-        cols = NCOL(roc_dt),
-        columns = names(roc_dt),
+        rows = NROW(curve_dt),
+        cols = NCOL(curve_dt),
+        columns = names(curve_dt),
         format = "arrow-ipc"
       ),
       payload
@@ -1614,7 +1616,7 @@ handle_job_result <- function(conn, frame, server) {
     paste0(
       "Unsupported slice `",
       slice,
-      "`. Use `summary`, `raw`, `record`, `varimp`, `predictions`, `roc`, ",
+      "`. Use `summary`, `raw`, `record`, `varimp`, `predictions`, `roc`, `pr`, ",
       "`session`, `metrics`, `review`, `writeup`, `transformed`, `loadings`, ",
       "or `assignments`."
     ),
