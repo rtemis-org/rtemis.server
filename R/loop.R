@@ -195,7 +195,7 @@ encode_response <- function(response) {
     error = function(e) {
       encode_frame(make_error(
         header[["id"]],
-        "internal_error",
+        "payload_too_large",
         paste0("Could not encode the response: ", conditionMessage(e))
       ))
     }

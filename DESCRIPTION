@@ -1,5 +1,5 @@
 Package: rtemis.server
-Version: 0.2.4
+Version: 0.2.5
 Title: 'rtemis' Server
 Date: 2026-11-23
 Authors@R: person(given = "E.D.", family = "Gennatas", role = c("aut", "cre", "cph"), 
@@ -20,7 +20,7 @@ Imports:
     S7,
     arrow,
     data.table,
-    rtemis (>= 1.4.4),
+    rtemis (>= 1.4.5),
     rtemis.core (>= 0.4.7),
     jsonlite,
     later,

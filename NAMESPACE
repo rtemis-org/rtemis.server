@@ -5,6 +5,7 @@ export(.set_job_id)
 export(serve)
 importFrom(data.table,
   ":=",
+  .N,
   .SD,
   let
 )

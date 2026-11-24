@@ -170,7 +170,7 @@ test_that("a response over the frame limits becomes an error response", {
   header <- decode_frame(encode_response(big))[["header"]]
   expect_equal(header[["id"]], "r9")
   expect_false(header[["ok"]])
-  expect_equal(header[["error"]][["code"]], "internal_error")
+  expect_equal(header[["error"]][["code"]], "payload_too_large")
 })
 
 

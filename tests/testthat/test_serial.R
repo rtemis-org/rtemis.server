@@ -196,7 +196,7 @@ test_that("roc_table returns an empty typed table on non-Supervised", {
   expect_s3_class(rt, "data.table")
   expect_equal(
     names(rt),
-    c("split", "class", "fold", "fpr", "tpr", "auc")
+    c("split", "class", "fold", "fpr", "tpr", "auc", "n_vertices")
   )
   expect_equal(nrow(rt), 0L)
 })
@@ -223,7 +223,10 @@ test_that("roc_table emits an aggregate plus one curve per resample", {
 
   rt <- roc_table(fit)
   expect_s3_class(rt, "data.table")
-  expect_equal(names(rt), c("split", "class", "fold", "fpr", "tpr", "auc"))
+  expect_equal(
+    names(rt),
+    c("split", "class", "fold", "fpr", "tpr", "auc", "n_vertices")
+  )
 
   test_rows <- rt[split == "test"]
   expect_gt(nrow(test_rows), 0L)
@@ -251,7 +254,8 @@ pr_wire_columns <- c(
   "recall",
   "precision",
   "ap",
-  "prevalence"
+  "prevalence",
+  "n_vertices"
 )
 
 test_that("pr_table returns an empty typed table on non-Supervised", {
@@ -301,6 +305,173 @@ test_that("pr_table emits an aggregate plus one curve per resample", {
   drawn <- rtemis::pr_table(fit, "test", max_points = 1000L)
   expect_equal(aggregate_rows[["recall"]], drawn[["recall"]])
   expect_equal(aggregate_rows[["precision"]], drawn[["precision"]])
+})
+
+
+# observed_predicted -----------------------------------------------------------
+
+op_model <- function(n, ...) {
+  set.seed(2026L)
+  dat <- data.frame(x = rnorm(n))
+  dat[["y"]] <- dat[["x"]] + rnorm(n)
+  rtemis::train(
+    dat,
+    hyperparameters = rtemis::setup_GLM(),
+    verbosity = 0L,
+    ...
+  )
+}
+
+# A `job.result` reply for a finished job, as the client decodes it.
+result_slice <- function(result, slice, ...) {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  conn <- new_connection()
+  conn[["authed"]] <- TRUE
+  sess <- new_session("x")
+  job <- new.env(parent = emptyenv())
+  job[["id"]] <- "job-1"
+  job[["status"]] <- "complete"
+  job[["result"]] <- result
+  sess[["jobs"]][["job-1"]] <- job
+  conn[["session_id"]] <- sess[["id"]]
+  decode_frame(encode_response(dispatch_request(
+    conn,
+    list(
+      header = list(
+        id = "r",
+        method = "job.result",
+        params = list(job_id = "job-1", slice = slice, ...)
+      )
+    ),
+    new_server_state(token = "t")
+  )))
+}
+
+test_that("observed_predicted states what it sends and what it leaves out", {
+  mod <- op_model(2000L, outer_resampling_config = rtemis::setup_KFold(3L))
+  reply <- result_slice(mod, "observed_predicted", max_points = 100, seed = 7)
+  result <- reply[["header"]][["result"]]
+  expect_identical(result[["max_points"]], 100L)
+  expect_identical(result[["seed"]], 7L)
+  expect_identical(result[["method"]], "random")
+
+  values <- rtemis::observed_predicted_table(mod, max_points = 100L, seed = 7L)
+  expect_length(result[["samples"]], 2L)
+  training <- result[["samples"]][[1L]]
+  expect_identical(training[["split"]], "training")
+  expect_identical(training[["n"]], 4000L)
+  expect_lte(training[["n_points"]], 104L)
+  expect_equal(training[["rsq"]], values[["summary"]][["rsq"]][[1L]])
+  expect_length(result[["fits"]], 2L)
+  expect_length(result[["fits"]][[1L]][["fitted"]], 200L)
+
+  points <- as.data.frame(arrow::read_ipc_stream(reply[["payload"]]))
+  expect_identical(names(points), c("split", "observed", "predicted"))
+  expect_identical(NROW(points), result[["rows"]])
+  expect_equal(points[["observed"]], values[["points"]][["observed"]])
+})
+
+test_that("the size of observed_predicted is independent of the cases", {
+  size <- function(n) {
+    reply <- result_slice(op_model(n), "observed_predicted", max_points = 50)
+    length(reply[["payload"]])
+  }
+  expect_equal(size(500L), size(5000L), tolerance = 0.05)
+})
+
+test_that("a single sample is sent as an array of one", {
+  result <- result_slice(op_model(50L), "observed_predicted")[["header"]]
+  expect_null(names(result[["result"]][["samples"]]))
+  expect_identical(
+    result[["result"]][["samples"]][[1L]][["n_points"]],
+    50L
+  )
+})
+
+test_that("observed_predicted is empty for a classification model", {
+  fit <- rtemis::train(
+    data.frame(x = c(1:20, 5:24), y = factor(rep(c("a", "b"), each = 20L))),
+    hyperparameters = rtemis::setup_GLM(),
+    verbosity = 0L
+  )
+  reply <- result_slice(fit, "observed_predicted")
+  expect_true(reply[["header"]][["ok"]])
+  expect_identical(reply[["header"]][["result"]][["rows"]], 0L)
+  expect_null(reply[["payload"]])
+})
+
+test_that("observed_predicted checks its parameters", {
+  mod <- op_model(50L)
+  for (bad in list(
+    list(max_points = 1),
+    list(max_points = 2.5),
+    list(seed = "a")
+  )) {
+    reply <- do.call(result_slice, c(list(mod, "observed_predicted"), bad))
+    expect_identical(
+      reply[["header"]][["error"]][["code"]],
+      "invalid_params"
+    )
+  }
+})
+
+
+# Replies that do not fit ------------------------------------------------------
+
+test_that("predictions that do not fit are refused before encoding", {
+  mod <- op_model(100L)
+  size <- arrow_size(predictions_table(mod))
+  encoded <- length(encode_arrow_ipc(predictions_table(mod)))
+  expect_lt(abs(encoded - size), 1500)
+  expect_error(
+    predictions_table(mod, limit = size - 1),
+    "100 predictions",
+    class = "rtemislive_payload_too_large"
+  )
+})
+
+test_that("the curve slices state the cap and the vertices before it", {
+  set.seed(1L)
+  x <- rnorm(3000L)
+  fit <- rtemis::train(
+    data.frame(x = x, y = factor(ifelse(x + rnorm(3000L) > 0, "a", "b"))),
+    hyperparameters = rtemis::setup_GLM(),
+    verbosity = 0L
+  )
+  for (slice in c("roc", "pr")) {
+    reply <- result_slice(fit, slice)
+    expect_identical(reply[["header"]][["result"]][["max_points"]], 1000L)
+    curve <- as.data.frame(arrow::read_ipc_stream(reply[["payload"]]))
+    expect_identical(NROW(curve), 1000L)
+    expect_gt(unique(curve[["n_vertices"]]), 1000L)
+  }
+})
+
+
+# summary_json ---------------------------------------------------------------
+
+test_that("the size of the summary is independent of the number of cases", {
+  summary_of <- function(n) {
+    set.seed(2026L)
+    dat <- data.frame(x = rnorm(n))
+    dat[["y"]] <- dat[["x"]] + rnorm(n)
+    summary_json(rtemis::train(
+      dat,
+      hyperparameters = rtemis::setup_GLM(),
+      outer_resampling_config = rtemis::setup_KFold(3L),
+      verbosity = 0L
+    ))
+  }
+  small <- summary_of(200L)
+  large <- summary_of(2000L)
+  expect_null(large[["outer_resampler"]][["resamples"]])
+  expect_identical(large[["outer_resampler"]][["type"]], "KFold")
+  expect_equal(
+    nchar(.wire_json(small)),
+    nchar(.wire_json(large)),
+    tolerance = 0.05
+  )
 })
 
 
@@ -450,7 +621,16 @@ test_that("job.result `pr` sends the curves of a classification fit", {
   expect_equal(result[["format"]], "arrow-ipc")
   expect_equal(
     unlist(result[["columns"]]),
-    c("split", "class", "fold", "recall", "precision", "ap", "prevalence")
+    c(
+      "split",
+      "class",
+      "fold",
+      "recall",
+      "precision",
+      "ap",
+      "prevalence",
+      "n_vertices"
+    )
   )
   back <- decode_arrow_ipc(resp[["payload"]])
   expect_equal(nrow(back), result[["rows"]])

@@ -1,6 +1,13 @@
 This file starts here: entries below cover changes from this point forward
 rather than reconstructing the package's earlier history.
 
+# rtemis.server 0.2.5
+
+- `job.result` serves an `observed_predicted` slice for regression models: the line, band, and R-squared of each sample from every case, and a bounded random sample of points, from `rtemis::observed_predicted_table()`; requires rtemis 1.4.5. The reply states how many cases and points each sample has and how the points were chosen.
+- The `roc` and `pr` slices give `n_vertices`, the number of vertices of each curve before the cap, and `max_points`, the cap.
+- The `predictions` slice answers `payload_too_large` with the number of predictions when they do not fit a reply.
+- The `summary` slice leaves out the case indices of the outer resamples, so its size is independent of the number of cases.
+
 # rtemis.server 0.2.4
 
 - The third failed `auth` attempt closes the connection, as does any other request before authentication, and a connection must authenticate within 10 seconds.

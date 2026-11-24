@@ -51,15 +51,19 @@ encode_arrow_ipc <- function(df) {
 #' only), `actual`, `predicted`, and one `prob_<class>` column per stored
 #' probability column of a classifier.
 #'
+#' Aborts with class `rtemislive_payload_too_large` when the table does not fit
+#' a frame, before it is encoded.
+#'
 #' @param sup `Supervised` or `SupervisedRes` object. Other inputs error -
-#'   `job.result` callers should switch on `inherits` first.
+#'   `job.result` callers switch on `inherits` first.
+#' @param limit Numeric: Largest allowed size in bytes.
 #'
 #' @return `data.table`.
 #'
 #' @author EDG
 #' @keywords internal
 #' @noRd
-predictions_table <- function(sup) {
+predictions_table <- function(sup, limit = .RTEMISLIVE_FRAME_MAX) {
   if (
     !inherits(sup, "rtemis::Supervised") &&
       !inherits(sup, "rtemis::SupervisedRes")
@@ -76,15 +80,125 @@ predictions_table <- function(sup) {
     c("split", "fold", "actual"),
     skip_absent = TRUE
   )
+  bytes <- arrow_size(out)
+  if (bytes > limit) {
+    rtemis.core::abort(
+      "The ",
+      format(NROW(out), big.mark = ","),
+      " predictions of this model (",
+      ceiling(bytes / 1048576),
+      " MiB) exceed the limit of ",
+      floor(limit / 1048576),
+      " MiB per reply. Save the model and read every prediction in R with ",
+      "rtemis::get_predictions().",
+      class = "rtemislive_payload_too_large"
+    )
+  }
   out
+}
+
+
+#' Size of a table as Arrow IPC
+#'
+#' The bytes of the column buffers, without the schema and the batch headers.
+#'
+#' @param x `data.table` of numeric, integer, factor, logical, and character
+#'   columns.
+#'
+#' @return Numeric scalar.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+arrow_size <- function(x) {
+  n <- as.numeric(NROW(x))
+  sum(vapply(
+    names(x),
+    function(name) {
+      column <- x[[name]]
+      if (is.character(column)) {
+        # Few distinct values in many rows: sample and resample names.
+        counts <- x[, list(count = .N), by = name]
+        text <- nchar(counts[[name]], type = "bytes")
+        return(4 * n + sum(as.numeric(counts[["count"]]) * text))
+      }
+      if (is.double(column)) 8 * n else 4 * n
+    },
+    numeric(1L)
+  ))
+}
+
+
+# %% Observed versus predicted ----------------------------------------------
+
+# Points per sample of the `observed_predicted` slice, and the seed of their
+# random selection, when the request names none.
+.OBSERVED_PREDICTED_POINTS <- 5000L
+.OBSERVED_PREDICTED_SEED <- 1L
+
+
+#' Wire parts of an observed-versus-predicted plot
+#'
+#' [rtemis::observed_predicted_table()] under the wire's column names. The
+#' statistics and the line come from every case; `points` is bounded.
+#'
+#' @param sup A job result.
+#' @param max_points Integer: Number of cases of a sample above which its points
+#'   are sampled.
+#' @param seed Integer: Seed of the selection.
+#'
+#' @return Named list: `points`, a `data.table` with columns `split`,
+#'   `observed`, and `predicted`; `samples`, a list with one record per sample;
+#'   and `fits`, a list with one line per sample. `NULL` for a result that is
+#'   not a regression model.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+observed_predicted_parts <- function(sup, max_points, seed) {
+  if (
+    !inherits(sup, "rtemis::Regression") &&
+      !inherits(sup, "rtemis::RegressionRes")
+  ) {
+    return(NULL)
+  }
+  values <- rtemis::observed_predicted_table(
+    sup,
+    max_points = max_points,
+    seed = seed
+  )
+  for (part in values) {
+    data.table::setnames(part, "sample", "split")
+  }
+  samples <- lapply(
+    seq_len(NROW(values[["summary"]])),
+    function(i) as.list(values[["summary"]][i])
+  )
+  fits <- lapply(unique(values[["fits"]][["split"]]), function(s) {
+    fit <- values[["fits"]][values[["fits"]][["split"]] == s]
+    list(
+      split = s,
+      observed = I(fit[["observed"]]),
+      fitted = I(fit[["fitted"]]),
+      lower = I(fit[["lower"]]),
+      upper = I(fit[["upper"]])
+    )
+  })
+  list(points = values[["points"]], samples = samples, fits = fits)
 }
 
 
 # %% Threshold curve tables --------------------------------------------------
 
+# Vertices per curve of the `roc` and `pr` slices.
+.CURVE_POINTS <- 1000L
+
+
 #' Build a long-format threshold-curve table for a classification result
 #'
-#' One definition of how a curve view of rtemis becomes a wire table: `fold` is
+#' One definition of how a curve view of rtemis becomes a wire table.
+#' `n_vertices` is the number of vertices of a curve before `max_points` is
+#' applied, constant within a curve. `fold` is
 #' `"aggregate"` for the curve pooled across all resamples and the resample
 #' identifier for the per-resample curves of a resampled fit; a single fit has
 #' the aggregate curves only. Regression results and classifiers without
@@ -137,18 +251,18 @@ curve_wire_table <- function(sup, view, empty, max_points) {
 #'
 #' [rtemis::roc_table()] of every sample with predicted probabilities, the data
 #' `rtemis::plot_roc()` draws, under the wire's column names: `split`, `class`,
-#' `fold`, `fpr`, `tpr`, `auc`.
+#' `fold`, `fpr`, `tpr`, `auc`, `n_vertices`.
 #'
 #' @param sup `Supervised` / `SupervisedRes` object.
 #' @param max_points Integer: Cap on curve vertices per curve.
 #'
 #' @return `data.table` with columns `split`, `class`, `fold`, `fpr`, `tpr`,
-#'   `auc`.
+#'   `auc`, `n_vertices`.
 #'
 #' @author EDG
 #' @keywords internal
 #' @noRd
-roc_table <- function(sup, max_points = 1000L) {
+roc_table <- function(sup, max_points = .CURVE_POINTS) {
   curve_wire_table(
     sup,
     rtemis::roc_table,
@@ -158,7 +272,8 @@ roc_table <- function(sup, max_points = 1000L) {
       fold = character(0),
       fpr = numeric(0),
       tpr = numeric(0),
-      auc = numeric(0)
+      auc = numeric(0),
+      n_vertices = integer(0)
     ),
     max_points
   )
@@ -169,18 +284,18 @@ roc_table <- function(sup, max_points = 1000L) {
 #'
 #' [rtemis::pr_table()] of every sample with predicted probabilities, the data
 #' `rtemis::plot_pr()` draws, under the wire's column names: `split`, `class`,
-#' `fold`, `recall`, `precision`, `ap`, `prevalence`.
+#' `fold`, `recall`, `precision`, `ap`, `prevalence`, `n_vertices`.
 #'
 #' @param sup `Supervised` / `SupervisedRes` object.
 #' @param max_points Integer: Cap on curve vertices per curve.
 #'
 #' @return `data.table` with columns `split`, `class`, `fold`, `recall`,
-#'   `precision`, `ap`, `prevalence`.
+#'   `precision`, `ap`, `prevalence`, `n_vertices`.
 #'
 #' @author EDG
 #' @keywords internal
 #' @noRd
-pr_table <- function(sup, max_points = 1000L) {
+pr_table <- function(sup, max_points = .CURVE_POINTS) {
   curve_wire_table(
     sup,
     rtemis::pr_table,
@@ -191,7 +306,8 @@ pr_table <- function(sup, max_points = 1000L) {
       recall = numeric(0),
       precision = numeric(0),
       ap = numeric(0),
-      prevalence = numeric(0)
+      prevalence = numeric(0),
+      n_vertices = integer(0)
     ),
     max_points
   )
@@ -427,8 +543,9 @@ make_response_payload <- function(id, result, payload) {
 #' Headline JSON for the `summary` slice
 #'
 #' Builds the lightweight summary envelope: full `to_json(result)` with
-#' heavy tabular sub-trees pruned (varimp, per-resample residuals). The
-#' pruned fields are available via their own slices as Arrow IPC.
+#' heavy sub-trees pruned (varimp, per-resample metrics, resample indices). The
+#' varimp, per-resample, and decomposition fields are available via their own
+#' slices. The size of the summary is independent of the number of cases.
 #'
 #' @param result A trained `Supervised` / `SupervisedRes` (or other
 #'   to_json-able object).
@@ -446,6 +563,12 @@ summary_json <- function(result) {
       # fetch the dedicated slice.
       out[[k]] <- list(available = TRUE, fetch_via = k)
     }
+  }
+  # The case indices of every outer resample: ten folds of a million cases are
+  # 62 MB of JSON, and the frame header holds 1 MiB. The resampler's type and
+  # config stay.
+  if (is.list(out[["outer_resampler"]])) {
+    out[["outer_resampler"]][["resamples"]] <- NULL
   }
   for (split in c("metrics_training", "metrics_validation", "metrics_test")) {
     slice <- out[[split]]

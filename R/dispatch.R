@@ -291,6 +291,9 @@ dispatch_request <- function(conn, frame, server) {
     rtemislive_not_found = function(e) {
       make_error(req_id, "not_found", conditionMessage(e))
     },
+    rtemislive_payload_too_large = function(e) {
+      make_error(req_id, "payload_too_large", conditionMessage(e))
+    },
     rtemislive_too_many = function(e) {
       make_error(req_id, "too_many", conditionMessage(e))
     },
@@ -1381,9 +1384,20 @@ handle_job_cancel <- function(conn, frame, server) {
 #'   `variables` is the number of ranked variables of each measure before the
 #'   cut.
 #' - `predictions`: small JSON pointer + Arrow IPC of the long-format
-#'   predictions table.
+#'   predictions table, every case of every sample and resample. An error with
+#'   code `payload_too_large` when it does not fit a frame.
+#' - `observed_predicted`: for a regression result, what an
+#'   observed-versus-predicted plot draws, from
+#'   `rtemis::observed_predicted_table()`. Arrow IPC of the points (`split`,
+#'   `observed`, `predicted`), and a JSON pointer with `samples`, one record per
+#'   sample (`n`, `n_missing`, `n_points`, the line's `intercept`, `slope`,
+#'   `sigma`, and `rsq`, and the ranges), `fits`, the line and its band per
+#'   sample, and `max_points`, `seed`, and `method`, how the points were chosen.
+#'   `samples` and `fits` come from every case. The optional `max_points` and
+#'   `seed` parameters set the selection. Empty pointer otherwise.
 #' - `roc`: small JSON pointer + Arrow IPC of the long-format ROC-curve
-#'   table (`split`, `class`, `fold`, `fpr`, `tpr`, `auc`) for classification
+#'   table (`split`, `class`, `fold`, `fpr`, `tpr`, `auc`, `n_vertices`) for
+#'   classification
 #'   fits, from `rtemis::roc_table`; `fold` is `"aggregate"` for the pooled
 #'   curve and per-resample labels otherwise. Empty pointer otherwise.
 #' - `pr`: as `roc`, for the precision-recall table (`split`, `class`, `fold`,
@@ -1501,6 +1515,48 @@ handle_job_result <- function(conn, frame, server) {
       payload
     ))
   }
+  if (slice == "observed_predicted") {
+    max_points <- params[["max_points"]] %||% .OBSERVED_PREDICTED_POINTS
+    seed <- params[["seed"]] %||% .OBSERVED_PREDICTED_SEED
+    check_wire_whole(max_points, "max_points")
+    check_wire_whole(seed, "seed")
+    if (max_points < 2 || max(max_points, seed) > .Machine[["integer.max"]]) {
+      rtemis.core::abort(
+        "`max_points` must be at least 2, and `max_points` and `seed` at most ",
+        .Machine[["integer.max"]],
+        ".",
+        class = "rtemislive_invalid_params"
+      )
+    }
+    parts <- observed_predicted_parts(
+      result,
+      max_points = as.integer(max_points),
+      seed = as.integer(seed)
+    )
+    if (is.null(parts)) {
+      # Not a regression model: empty pointer, as for `roc`.
+      return(make_response(
+        req_id,
+        list(rows = 0L, cols = 0L, columns = list(), format = "arrow-ipc")
+      ))
+    }
+    points <- parts[["points"]]
+    return(make_response_payload(
+      req_id,
+      list(
+        rows = NROW(points),
+        cols = NCOL(points),
+        columns = names(points),
+        format = "arrow-ipc",
+        samples = parts[["samples"]],
+        fits = parts[["fits"]],
+        max_points = as.integer(max_points),
+        seed = as.integer(seed),
+        method = "random"
+      ),
+      encode_arrow_ipc(points)
+    ))
+  }
   if (slice %in% c("roc", "pr")) {
     curve_dt <- if (slice == "roc") roc_table(result) else pr_table(result)
     if (is.null(curve_dt) || NROW(curve_dt) == 0L) {
@@ -1518,7 +1574,8 @@ handle_job_result <- function(conn, frame, server) {
         rows = NROW(curve_dt),
         cols = NCOL(curve_dt),
         columns = names(curve_dt),
-        format = "arrow-ipc"
+        format = "arrow-ipc",
+        max_points = .CURVE_POINTS
       ),
       payload
     ))
@@ -1656,7 +1713,8 @@ handle_job_result <- function(conn, frame, server) {
     paste0(
       "Unsupported slice `",
       slice,
-      "`. Use `summary`, `raw`, `record`, `varimp`, `predictions`, `roc`, `pr`, ",
+      "`. Use `summary`, `raw`, `record`, `varimp`, `predictions`, ",
+      "`observed_predicted`, `roc`, `pr`, ",
       "`session`, `metrics`, `review`, `writeup`, `transformed`, `loadings`, ",
       "or `assignments`."
     ),

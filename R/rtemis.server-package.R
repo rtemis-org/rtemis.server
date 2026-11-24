@@ -12,7 +12,7 @@
 #' Local WebSocket server that bridges browser-based rtemislive clients
 #' to a persistent R session running rtemis. Start it with [serve()].
 #'
-#' @importFrom data.table := .SD let
+#' @importFrom data.table := .N .SD let
 #' @importFrom rtemis to_json
 "_PACKAGE"
 
