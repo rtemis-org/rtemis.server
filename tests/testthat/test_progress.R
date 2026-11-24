@@ -325,7 +325,7 @@ test_that("msg() routed through sink + push/pull pipeline reaches the host", {
   # Sink machinery still lives in rtemis (will move to rtemis.core when
   # rtemis sheds `msg`); call the sink-aware version explicitly so the
   # test continues to exercise the daemon -> host route.
-  msg("Hello from sink")
+  rtemis.core::msg("Hello from sink")
   Sys.sleep(0.05)
   out <- drain_progress_socket(pull)
   expect_length(out, 1L)

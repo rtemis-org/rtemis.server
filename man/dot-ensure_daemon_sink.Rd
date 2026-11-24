@@ -4,30 +4,31 @@
 \alias{.ensure_daemon_sink}
 \title{Lazily install the daemon-side msg sink + push socket}
 \usage{
-.ensure_daemon_sink()
+.ensure_daemon_sink(url = NULL)
+}
+\arguments{
+\item{url}{Optional Character: Address of the host's progress socket. If
+\code{NULL}, returns without opening a socket.}
 }
 \value{
 \code{NULL}, invisibly.
 }
 \description{
-Runs as the first action of every wrapped job expression (see
-\code{submit_job} in jobs.R). On the first call per daemon, opens a
-nanonext push socket dialing the URL planted by
-\code{init_daemon_progress} and installs an \code{rtemis.core::set_msg_sink()}
-that forwards every \code{msg()} call as a JSON envelope on the socket.
-On subsequent calls (sink already installed), short-circuits.
+Runs as the first action of every wrapped job expression. On the first call
+per daemon, opens a nanonext push socket dialing \code{url} and installs an
+\code{rtemis.core::set_msg_sink()} that forwards every \code{msg()} call as a JSON
+envelope on the socket. Later calls find the sink installed and return.
 }
 \details{
 The socket is stored in the daemon's copy of rtemis.server's \code{live}
-environment, whose writes persist across regular \code{mirai()} tasks. See
-\code{init_daemon_progress()} for why setup happens here.
+environment, whose writes persist across \code{mirai()} tasks. Writes to a package
+namespace inside \code{mirai::everywhere()} do not persist, so the sink is
+installed by a task.
 
 Exported for the per-job expression built by \code{submit_job()}, which runs on
 a daemon and calls it as \code{rtemis.server::.ensure_daemon_sink()}.
 }
 \examples{
-# Without a progress URL in `options(rtemislive.progress_url)`, returns
-# without opening a socket.
 .ensure_daemon_sink()
 }
 \author{

@@ -32,6 +32,39 @@ test_that("check_token() rejects non-character or wrong-length input", {
   expect_false(check_token("abc", NULL))
   expect_false(check_token(c("a", "b"), "a"))
   expect_false(check_token(NA_character_, "a"))
+  # `charToRaw()` reads `NA_character_` as the bytes of "NA".
+  expect_false(check_token("NA", NA_character_))
+  expect_false(check_token(NA_character_, "NA"))
+  expect_false(check_token("", ""))
+  expect_false(check_token(NULL, "a"))
+})
+
+
+# check_supplied_token ----
+test_that("check_supplied_token() requires 16 printable characters", {
+  expect_invisible(check_supplied_token("abcd-1234-ef56-7890"))
+  expect_invisible(check_supplied_token(strrep("a", 16L)))
+  for (token in list(
+    strrep("a", 15L),
+    "",
+    NA_character_,
+    "sixteen chars, but spaces",
+    "caf\u00e9-caf\u00e9-caf\u00e9-caf\u00e9",
+    paste0(strrep("a", 16L), "\n"),
+    c("abcd-1234-ef56-7890", "abcd-1234-ef56-7890"),
+    1234567890123456
+  )) {
+    expect_error(check_supplied_token(token), "at least 16")
+  }
+})
+
+
+# request_header ----
+test_that("request_header() matches names regardless of case", {
+  headers <- c(Host = "127.0.0.1", origin = "https://live.rtemis.org")
+  expect_identical(request_header(headers, "Origin"), "https://live.rtemis.org")
+  expect_null(request_header(headers, "Cookie"))
+  expect_null(request_header(character(0L), "Origin"))
 })
 
 

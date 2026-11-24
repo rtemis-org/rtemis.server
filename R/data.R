@@ -1,7 +1,9 @@
+# data.R
+# ::rtemis.server::
 # 2026- EDG rtemis.org
 
-# Data-handle store and Arrow upload assembly for rtemislive. See
-# specs/rtemislive.md paragraph 6.2 and paragraph 7.
+# Data-handle store and Arrow upload assembly for rtemislive.
+# spec: rtemislive.md 6.2 and 7
 #
 # Each session env holds a `data` sub-env keyed by data_handle id. Each
 # value is itself an env containing:
@@ -50,6 +52,62 @@ new_upload_id <- function() {
 }
 
 
+# %% Wire parameter checks ---------------------------------------------------
+
+#' Check that a wire parameter is a non-empty string
+#'
+#' @param x Value of the parameter.
+#' @param name Character: Parameter name, for the message.
+#'
+#' @return `x`, invisibly. Aborts with class `rtemislive_invalid_params`
+#'   otherwise.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+check_wire_string <- function(x, name) {
+  if (!is.character(x) || length(x) != 1L || is.na(x) || !nzchar(x)) {
+    rtemis.core::abort(
+      "`",
+      name,
+      "` must be a single non-empty character string.",
+      class = "rtemislive_invalid_params"
+    )
+  }
+  invisible(x)
+}
+
+
+#' Check that a wire parameter is a positive whole number
+#'
+#' @param x Value of the parameter.
+#' @param name Character: Parameter name, for the message.
+#'
+#' @return `x`, invisibly. Aborts with class `rtemislive_invalid_params`
+#'   otherwise.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+check_wire_whole <- function(x, name) {
+  if (
+    !is.numeric(x) ||
+      length(x) != 1L ||
+      !is.finite(x) ||
+      x < 1 ||
+      x != round(x)
+  ) {
+    rtemis.core::abort(
+      "`",
+      name,
+      "` must be a positive whole number.",
+      class = "rtemislive_invalid_params"
+    )
+  }
+  invisible(x)
+}
+
+
 # %% Arrow IPC decoding ------------------------------------------------------
 
 #' Decode Arrow IPC stream bytes into a data.table
@@ -79,7 +137,8 @@ decode_arrow_ipc <- function(bytes) {
       rtemis.core::abort(
         "Could not decode Arrow IPC stream: ",
         conditionMessage(e),
-        parent = e
+        parent = e,
+        class = "rtemislive_invalid_params"
       )
     }
   )
@@ -113,11 +172,7 @@ decode_arrow_ipc <- function(bytes) {
 #' @keywords internal
 #' @noRd
 new_data_handle <- function(session, name, bytes, max_handles = 16L) {
-  if (
-    !is.character(name) || length(name) != 1L || is.na(name) || !nzchar(name)
-  ) {
-    rtemis.core::abort("`name` must be a single non-empty character string.")
-  }
+  check_wire_string(name, "name")
   data_env <- session[["data"]]
   if (length(ls(data_env)) >= max_handles) {
     rtemis.core::abort(
@@ -172,8 +227,10 @@ pending_uploads <- function(session) {
 #'
 #' @param session Session env.
 #' @param name Character scalar: User-friendly label.
-#' @param total_bytes Integer: Expected total payload size.
-#' @param n_chunks Integer: Number of chunks the client will send.
+#' @param total_bytes Numeric \[1, Inf): Expected total payload size, a whole
+#'   number.
+#' @param n_chunks Numeric \[1, total_bytes\]: Number of chunks the client will
+#'   send, a whole number.
 #'
 #' @return Character scalar - the upload_id.
 #'
@@ -181,20 +238,19 @@ pending_uploads <- function(session) {
 #' @keywords internal
 #' @noRd
 begin_upload <- function(session, name, total_bytes, n_chunks) {
-  if (
-    !is.character(name) || length(name) != 1L || is.na(name) || !nzchar(name)
-  ) {
-    rtemis.core::abort("`name` must be a single non-empty character string.")
+  check_wire_string(name, "name")
+  check_wire_whole(total_bytes, "total_bytes")
+  check_wire_whole(n_chunks, "n_chunks")
+  if (n_chunks > total_bytes) {
+    rtemis.core::abort(
+      "`n_chunks` (",
+      n_chunks,
+      ") must not exceed `total_bytes` (",
+      total_bytes,
+      ").",
+      class = "rtemislive_invalid_params"
+    )
   }
-  if (
-    !is.numeric(total_bytes) || length(total_bytes) != 1L || total_bytes <= 0L
-  ) {
-    rtemis.core::abort("`total_bytes` must be a single positive integer.")
-  }
-  if (!is.numeric(n_chunks) || length(n_chunks) != 1L || n_chunks <= 0L) {
-    rtemis.core::abort("`n_chunks` must be a single positive integer.")
-  }
-  total_bytes <- as.integer(total_bytes)
   n_chunks <- as.integer(n_chunks)
 
   u <- new.env(parent = emptyenv())
@@ -203,7 +259,9 @@ begin_upload <- function(session, name, total_bytes, n_chunks) {
   u[["total_bytes"]] <- total_bytes
   u[["n_chunks"]] <- n_chunks
   u[["chunks"]] <- vector("list", n_chunks)
-  u[["received_bytes"]] <- 0L
+  # Double, as is `total_bytes`: an upload may exceed `.Machine$integer.max`
+  # bytes, where an integer sum is NA.
+  u[["received_bytes"]] <- 0
   u[["received_count"]] <- 0L
   u[["created_at"]] <- Sys.time()
 
@@ -228,9 +286,14 @@ begin_upload <- function(session, name, total_bytes, n_chunks) {
 #' @keywords internal
 #' @noRd
 chunk_upload <- function(session, upload_id, chunk_index, bytes) {
-  if (!is.raw(bytes)) {
-    rtemis.core::abort("Chunk payload must be a raw vector.")
+  if (!is.raw(bytes) || length(bytes) == 0L) {
+    rtemis.core::abort(
+      "Chunk payload must be a non-empty raw vector.",
+      class = "rtemislive_invalid_params"
+    )
   }
+  check_wire_string(upload_id, "upload_id")
+  check_wire_whole(chunk_index, "chunk_index")
   pu <- pending_uploads(session)
   u <- pu[[upload_id]]
   if (is.null(u)) {
@@ -241,12 +304,7 @@ chunk_upload <- function(session, upload_id, chunk_index, bytes) {
       class = "rtemislive_not_found"
     )
   }
-  if (
-    !is.numeric(chunk_index) ||
-      length(chunk_index) != 1L ||
-      chunk_index < 1L ||
-      chunk_index > u[["n_chunks"]]
-  ) {
+  if (chunk_index > u[["n_chunks"]]) {
     rtemis.core::abort(
       "`chunk_index` must be between 1 and ",
       u[["n_chunks"]],
@@ -262,6 +320,16 @@ chunk_upload <- function(session, upload_id, chunk_index, bytes) {
       "Chunk ",
       chunk_index,
       " already received.",
+      class = "rtemislive_invalid_params"
+    )
+  }
+  if (u[["received_bytes"]] + length(bytes) > u[["total_bytes"]]) {
+    rtemis.core::abort(
+      "Chunk ",
+      chunk_index,
+      " exceeds the declared size of ",
+      u[["total_bytes"]],
+      " bytes.",
       class = "rtemislive_invalid_params"
     )
   }
@@ -296,6 +364,7 @@ chunk_upload <- function(session, upload_id, chunk_index, bytes) {
 #' @keywords internal
 #' @noRd
 assemble_chunked_upload <- function(session, upload_id) {
+  check_wire_string(upload_id, "upload_id")
   pu <- pending_uploads(session)
   u <- pu[[upload_id]]
   if (is.null(u)) {
@@ -362,17 +431,18 @@ end_upload <- function(session, upload_id, max_handles = 16L) {
 
 #' Cancel an in-progress chunked upload
 #'
-#' Idempotent - cancelling an unknown upload is a no-op returning `FALSE`.
+#' Idempotent - canceling an unknown upload is a no-op returning `FALSE`.
 #'
 #' @param session Session env.
 #' @param upload_id Character scalar.
 #'
-#' @return Logical - `TRUE` if a pending upload was cancelled.
+#' @return Logical - `TRUE` if a pending upload was canceled.
 #'
 #' @author EDG
 #' @keywords internal
 #' @noRd
 cancel_upload <- function(session, upload_id) {
+  check_wire_string(upload_id, "upload_id")
   pu <- pending_uploads(session)
   if (!exists(upload_id, envir = pu, inherits = FALSE)) {
     return(FALSE)
@@ -398,6 +468,7 @@ cancel_upload <- function(session, upload_id) {
 #' @keywords internal
 #' @noRd
 get_data <- function(session, handle) {
+  check_wire_string(handle, "data_handle")
   h <- session[["data"]][[handle]]
   if (is.null(h)) {
     rtemis.core::abort(

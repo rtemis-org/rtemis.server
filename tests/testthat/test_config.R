@@ -59,7 +59,7 @@ test_that(".from_wire passes `positive_class` through, dropping empty", {
 
 
 test_that("build_super_config builds a SuperConfigLive from the form wire shape", {
-  dt <- data.table(a = rnorm(20), b = rnorm(20), y = rnorm(20))
+  dt <- data.table::data.table(a = rnorm(20), b = rnorm(20), y = rnorm(20))
   cfg <- build_cfg(
     list(
       data_handle = "d1",
@@ -76,15 +76,18 @@ test_that("build_super_config builds a SuperConfigLive from the form wire shape"
     dt
   )
   expect_true(inherits(cfg, "rtemis::SuperConfigTabular"))
-  expect_equal(prop(prop(cfg, "hyperparameters"), "algorithm"), "GLM")
+  expect_equal(S7::prop(S7::prop(cfg, "hyperparameters"), "algorithm"), "GLM")
   expect_equal(
-    prop(prop(cfg, "outer_resampling_config"), "n_resamples"),
+    S7::prop(S7::prop(cfg, "outer_resampling_config"), "n_resamples"),
     3L
   )
-  expect_true(inherits(prop(cfg, "hyperparameters"), "rtemis::Hyperparameters"))
+  expect_true(inherits(
+    S7::prop(cfg, "hyperparameters"),
+    "rtemis::Hyperparameters"
+  ))
   # Live runs write nothing to disk.
-  expect_null(prop(cfg, "outdir"))
-  expect_identical(prop(cfg, "dat_training"), dt)
+  expect_null(S7::prop(cfg, "outdir"))
+  expect_identical(S7::prop(cfg, "dat_training"), dt)
 })
 
 
@@ -92,7 +95,7 @@ test_that("a key the config does not declare is rejected, not dropped", {
   # rtemis's reconstructors are strict, so a stale or mistyped key surfaces
   # here instead of training something other than what was asked for. This is
   # what `.from_wire()` must not paper over: only transport keys are stripped.
-  dt <- data.table(a = rnorm(20), b = rnorm(20), y = rnorm(20))
+  dt <- data.table::data.table(a = rnorm(20), b = rnorm(20), y = rnorm(20))
   err <- tryCatch(
     build_cfg(
       list(
@@ -125,7 +128,7 @@ test_that("build_super_config accepts a canonical schema.rtemis.org config", {
   # view: `$schema` markers, the learner as `{algorithm, ...settings}` with no
   # top-level `algorithm`, and the same `n_resamples` spelling as the setup
   # formal. It must reach the same `SuperConfigLive`.
-  dt <- data.table(a = rnorm(20), b = rnorm(20), y = rnorm(20))
+  dt <- data.table::data.table(a = rnorm(20), b = rnorm(20), y = rnorm(20))
   cfg <- build_cfg(
     list(
       `$schema` = "https://schema.rtemis.org/supervised/r/v1/schema.json",
@@ -142,13 +145,16 @@ test_that("build_super_config accepts a canonical schema.rtemis.org config", {
   )
   expect_true(inherits(cfg, "rtemis::SuperConfigTabular"))
   expect_equal(
-    prop(prop(cfg, "outer_resampling_config"), "n_resamples"),
+    S7::prop(S7::prop(cfg, "outer_resampling_config"), "n_resamples"),
     3L
   )
-  expect_true(inherits(prop(cfg, "hyperparameters"), "rtemis::Hyperparameters"))
+  expect_true(inherits(
+    S7::prop(cfg, "hyperparameters"),
+    "rtemis::Hyperparameters"
+  ))
   expect_true(
     inherits(
-      prop(cfg, "preprocessor_config"),
+      S7::prop(cfg, "preprocessor_config"),
       "rtemis::SupervisedPreprocessorConfig"
     )
   )
@@ -165,7 +171,7 @@ test_that("build_super_config accepts a variants set as the learner", {
   #
   # `.nest_hyperparameters()` must leave the block alone here: folding an
   # `algorithm` in is what would bury the variants.
-  dt <- data.table(a = rnorm(20), b = rnorm(20), y = rnorm(20))
+  dt <- data.table::data.table(a = rnorm(20), b = rnorm(20), y = rnorm(20))
   cfg <- build_cfg(
     list(
       `$schema` = "https://schema.rtemis.org/supervised/r/v1/schema.json",
@@ -179,11 +185,11 @@ test_that("build_super_config accepts a variants set as the learner", {
     ),
     dt
   )
-  hp <- prop(cfg, "hyperparameters")
+  hp <- S7::prop(cfg, "hyperparameters")
   expect_true(inherits(hp, "rtemis::HyperparametersSet"))
   # The variant's name survives: it is what a tuner reports as the winner.
-  expect_equal(names(prop(hp, "variants")), "default")
-  expect_equal(prop(hp, "algorithm"), "Ranger")
+  expect_equal(names(S7::prop(hp, "variants")), "default")
+  expect_equal(S7::prop(hp, "algorithm"), "Ranger")
 })
 
 
@@ -193,7 +199,7 @@ test_that("build_super_config accepts a config that names no learner", {
   # "rtemis chooses" rather than "the caller forgot". The handler used to
   # require one, which made this unsubmittable even though `train()` has always
   # run it.
-  dt <- data.table(a = rnorm(20), b = rnorm(20), y = rnorm(20))
+  dt <- data.table::data.table(a = rnorm(20), b = rnorm(20), y = rnorm(20))
   cfg <- build_cfg(
     list(
       data_handle = "d1",
@@ -202,7 +208,7 @@ test_that("build_super_config accepts a config that names no learner", {
     dt
   )
   expect_true(inherits(cfg, "rtemis::SuperConfigTabular"))
-  expect_null(prop(cfg, "hyperparameters"))
+  expect_null(S7::prop(cfg, "hyperparameters"))
 })
 
 
@@ -234,7 +240,7 @@ test_that("every SuperConfig property reaches setup_SuperConfigLive", {
 
 
 test_that("build_super_config rejects an unmodelled key", {
-  dt <- data.table(a = rnorm(10), y = rnorm(10))
+  dt <- data.table::data.table(a = rnorm(10), y = rnorm(10))
   expect_error(
     build_cfg(
       list(algorithm = "GLM", preprocessor_config = list(no_such_arg = TRUE)),

@@ -61,6 +61,7 @@ test_that("dispatch_request() returns malformed_frame when header is not a list"
 test_that("dispatch_request() returns malformed_frame when method is missing", {
   server <- make_server()
   conn <- new_connection()
+  conn[["authed"]] <- TRUE
   resp <- dispatch_request(
     conn,
     list(header = list(v = 1L, id = "r")),
@@ -451,6 +452,43 @@ test_that("session.rename without name -> invalid_params", {
   resp <- dispatch_request(conn, make_request("session.rename"), server)
   expect_false(resp[["ok"]])
   expect_equal(resp[["error"]][["code"]], "invalid_params")
+})
+
+test_that("session.delete detaches peers and cancels unfinished jobs", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  server <- new_server_state(token = "t")
+  conns <- lapply(1:2, function(i) {
+    conn <- new_connection()
+    conn[["authed"]] <- TRUE
+    register_connection(server, conn)
+    conn
+  })
+  sess <- new_session("shared")
+  for (conn in conns) {
+    attach_connection(sess, conn[["id"]])
+    conn[["session_id"]] <- sess[["id"]]
+  }
+  job <- new.env(parent = emptyenv())
+  job[["id"]] <- "job-1"
+  job[["status"]] <- "queued"
+  sess[["jobs"]][["job-1"]] <- job
+
+  resp <- dispatch_request(
+    conns[[1L]],
+    list(header = list(id = "r", method = "session.delete")),
+    server
+  )
+  expect_true(resp[["ok"]])
+  expect_null(conns[[1L]][["session_id"]])
+  expect_null(conns[[2L]][["session_id"]])
+  expect_identical(job[["status"]], "cancelled")
+  resp <- dispatch_request(
+    conns[[2L]],
+    list(header = list(id = "r", method = "job.list")),
+    server
+  )
+  expect_identical(resp[["error"]][["code"]], "not_attached")
 })
 
 test_that("session.delete removes the session and detaches", {

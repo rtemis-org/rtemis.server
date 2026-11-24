@@ -1,25 +1,20 @@
+# loop.R
+# ::rtemis.server::
 # 2026- EDG rtemis.org
 
-# Host event loop for rtemislive. See specs/rtemislive.md paragraph 13.
+# Connection handling, event delivery, and periodic host work.
 #
-# The loop is single-threaded and non-blocking. Each tick:
+# WebSocket messages arrive through the callbacks of `ws_handler()`, which call
+# `handle_message()`. `serve()` schedules `host_tick()`, which:
 #
-# 1. (delegated to serve.R) Accept any newly-arrived WS connections.
-# 2. For each open connection: pull bytes from its underlying nanonext
-#    stream into its buffer; parse complete frames; dispatch each;
-#    encode the response and send it back on the same stream.
-# 3. Drain the progress pull socket: route each forwarded message to the
-#    owning session as a `job.progress` event (sent to attached
-#    connections, or buffered on the session when none are attached).
-# 4. Walk all active jobs across all sessions; for any that have just
-#    resolved, emit the corresponding `job.complete` / `job.failed` /
-#    `job.cancelled` event.
-# 5. Periodic ticks: emit per-session `heartbeat` events, GC idle
-#    sessions and stale data handles.
-#
-# The functions in this file are written so each step is independently
-# testable. WS-specific I/O (accept, raw read, raw send) is encapsulated
-# in tiny helpers that tests can replace with in-memory stand-ins.
+# 1. Closes connections that stay unauthenticated.
+# 2. Replaces daemons that died.
+# 3. Drains the progress socket: each message becomes a `job.progress` event of
+#    the owning session.
+# 4. Polls active jobs and emits `job.complete` / `job.failed` /
+#    `job.cancelled`.
+# 5. Starts queued jobs.
+# 6. Emits heartbeats and removes idle sessions and stale data handles.
 
 # %% Connection registry ----------------------------------------------------
 
@@ -41,12 +36,13 @@ register_connection <- function(server, conn) {
 }
 
 
-#' Unregister and clean up a connection
+#' Close a connection
 #'
 #' Detaches the connection from its session (emitting a
 #' `session.connection_left` event to remaining peers), removes it from
-#' the server's connection registry, and tries to close the underlying
-#' socket if present.
+#' the server's connection registry, and closes its WebSocket. The first call
+#' does this; later calls for the same connection return at once, as when the
+#' WebSocket's close callback follows a close by the server.
 #'
 #' @param server Server env.
 #' @param conn Connection env.
@@ -57,28 +53,35 @@ register_connection <- function(server, conn) {
 #' @keywords internal
 #' @noRd
 disconnect_connection <- function(server, conn) {
+  if (isTRUE(conn[["closed"]])) {
+    return(invisible(NULL))
+  }
+  conn[["closed"]] <- TRUE
   cid <- conn[["id"]]
-  s <- connection_session(conn)
-  if (!is.null(s)) {
-    detach_connection(s, cid)
-    ev <- make_event(
-      "session.connection_left",
-      data = list(
-        session_id = s[["id"]],
-        connection_id = cid,
-        n_connections = length(s[["connections"]])
-      )
-    )
-    emit_event_to_session(server, s, ev)
-  }
-  conn[["session_id"]] <- NULL
-  if (!is.null(conn[["socket"]])) {
-    tryCatch(close_progress_socket(conn[["socket"]]), error = function(e) NULL)
-    conn[["socket"]] <- NULL
-  }
   reg <- server[["connections"]]
   if (exists(cid, envir = reg, inherits = FALSE)) {
     rm(list = cid, envir = reg)
+  }
+  s <- connection_session(conn)
+  conn[["session_id"]] <- NULL
+  if (is.function(conn[["close_socket"]])) {
+    tryCatch(conn[["close_socket"]](), error = function(e) NULL)
+  }
+  if (!is.null(s)) {
+    detach_connection(s, cid)
+    # Presence concerns the connections that remain. Without one, the event
+    # would occupy the replay buffer of the next `session.join`.
+    if (length(s[["connections"]]) > 0L) {
+      ev <- make_event(
+        "session.connection_left",
+        data = list(
+          session_id = s[["id"]],
+          connection_id = cid,
+          n_connections = length(s[["connections"]])
+        )
+      )
+      emit_event_to_session(server, s, ev)
+    }
   }
   rtemis.core::info(
     "Connection closed: ",
@@ -93,191 +96,155 @@ disconnect_connection <- function(server, conn) {
 }
 
 
-# %% Per-connection I/O -----------------------------------------------------
-
-#' Pull bytes from a connection's socket into its read buffer
+#' Close the connections that stay unauthenticated
 #'
-#' Default implementation reads from `conn$socket` with
-#' `nanonext::recv(... block = FALSE)`. Returns `TRUE` if the socket is
-#' healthy (regardless of whether any bytes arrived), `FALSE` if the
-#' socket has errored / closed.
+#' A connection must authenticate within `.RTEMISLIVE_AUTH_TIMEOUT` seconds of
+#' event-loop time. Time during which a request blocked the loop counts for at
+#' most one second, because the connection's `auth` message may be waiting
+#' behind that request.
 #'
-#' Tests stuff bytes directly into `conn$buffer` and skip this step.
+#' @param server Server env.
 #'
-#' @param conn Connection env.
-#'
-#' @return Logical scalar.
+#' @return Integer - number of connections closed.
 #'
 #' @author EDG
 #' @keywords internal
 #' @noRd
-read_into_buffer <- function(conn) {
-  sock <- conn[["socket"]]
-  if (is.null(sock)) {
-    return(TRUE) # nothing to read; not an error
+drop_unauthenticated <- function(server) {
+  now <- Sys.time()
+  elapsed <- as.numeric(difftime(
+    now,
+    server[["last_auth_check"]] %||% now,
+    units = "secs"
+  ))
+  elapsed <- min(max(elapsed, 0), 1)
+  server[["last_auth_check"]] <- now
+  closed <- 0L
+  for (cid in ls(server[["connections"]])) {
+    conn <- server[["connections"]][[cid]]
+    if (is.null(conn) || isTRUE(conn[["authed"]])) {
+      next
+    }
+    conn[["unauthed_seconds"]] <- conn[["unauthed_seconds"]] + elapsed
+    if (conn[["unauthed_seconds"]] >= .RTEMISLIVE_AUTH_TIMEOUT) {
+      rtemis.core::warn(
+        "Closing ",
+        cid,
+        ": not authenticated within ",
+        .RTEMISLIVE_AUTH_TIMEOUT,
+        " s.",
+        package = "rtemis.server"
+      )
+      disconnect_connection(server, conn)
+      closed <- closed + 1L
+    }
   }
-  repeat {
-    chunk <- tryCatch(
-      nanonext::recv(sock, mode = "raw", block = FALSE),
-      error = function(e) NULL
-    )
-    if (is.null(chunk)) {
-      break
-    }
-    if (inherits(chunk, "errorValue")) {
-      # 8 == NNG_ETIMEDOUT (no data right now) is OK; other errors are fatal.
-      if (identical(unclass(chunk), 8L)) {
-        break
-      }
-      return(FALSE)
-    }
-    if (!is.raw(chunk) || length(chunk) == 0L) {
-      break
-    }
-    conn[["buffer"]] <- c(conn[["buffer"]], chunk)
-  }
-  TRUE
+  closed
 }
 
 
-#' Send a raw response frame on a connection
+# %% Per-connection I/O -----------------------------------------------------
+
+#' Send a raw frame on a connection
 #'
-#' Calls `conn$send_raw(bytes)` if installed, else attempts
-#' `nanonext::send()` on `conn$socket`. Returns `TRUE` on success,
-#' `FALSE` on error (caller can treat that as a disconnect signal).
+#' `ws$send()` reports a closed connection by returning an `errorValue`; it
+#' raises no condition.
 #'
 #' @param conn Connection env.
 #' @param bytes Raw vector.
 #'
-#' @return Logical scalar.
+#' @return Logical scalar: `FALSE` on failure, which callers treat as a
+#'   disconnect.
 #'
 #' @author EDG
 #' @keywords internal
 #' @noRd
 write_frame <- function(conn, bytes) {
-  if (!is.raw(bytes)) {
-    return(FALSE)
-  }
   send_fn <- conn[["send_raw"]]
-  if (is.function(send_fn)) {
-    res <- tryCatch(send_fn(bytes), error = function(e) e)
-    return(!inherits(res, "error"))
-  }
-  sock <- conn[["socket"]]
-  if (is.null(sock)) {
+  if (!is.raw(bytes) || !is.function(send_fn) || isTRUE(conn[["closed"]])) {
     return(FALSE)
   }
-  res <- tryCatch(
-    nanonext::send(sock, bytes, mode = "raw", block = FALSE),
-    error = function(e) e
+  res <- tryCatch(send_fn(bytes), error = function(e) e)
+  !inherits(res, "error") && !inherits(res, "errorValue")
+}
+
+
+#' Encode a handler's response
+#'
+#' Two response shapes: a plain header (a list with `v` at the top level) from
+#' most handlers, and `{header, payload}` from `make_response_payload()`. A
+#' response that exceeds the frame limits becomes an error response, so that
+#' the client's request resolves.
+#'
+#' @param response Named list: Response of `dispatch_request()`.
+#'
+#' @return Raw vector.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+encode_response <- function(response) {
+  header <- response
+  payload <- NULL
+  if (is.null(response[["v"]]) && !is.null(response[["header"]])) {
+    header <- response[["header"]]
+    payload <- response[["payload"]]
+  }
+  tryCatch(
+    encode_frame(header, payload),
+    error = function(e) {
+      encode_frame(make_error(
+        header[["id"]],
+        "internal_error",
+        paste0("Could not encode the response: ", conditionMessage(e))
+      ))
+    }
   )
-  if (inherits(res, "error") || inherits(res, "errorValue")) {
+}
+
+
+#' Handle one WebSocket message
+#'
+#' One message carries one frame. A malformed message gets an error response.
+#' After a response that ends the connection, the WebSocket is closed. Messages
+#' of a closed connection are ignored.
+#'
+#' Before authentication, every message except a failed `auth` below the limit
+#' ends the connection. `ws$send()` blocks R until the client reads, so a client
+#' without the token must receive no more bytes than the socket buffers hold:
+#' the `ready` event and at most `.RTEMISLIVE_AUTH_ATTEMPTS` short replies.
+#'
+#' @param conn Connection env.
+#' @param bytes Raw vector: The message.
+#' @param server Server env.
+#'
+#' @return Logical scalar: `TRUE` if a request was dispatched.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+handle_message <- function(conn, bytes, server) {
+  if (isTRUE(conn[["closed"]])) {
     return(FALSE)
   }
-  TRUE
-}
-
-
-#' Parse complete frames out of a connection's buffer and dispatch each
-#'
-#' Reads as many complete frames as the buffer holds, dispatches each,
-#' encodes the response, sends it. If a frame is malformed, sends an
-#' error response and continues (per spec - malformed input shouldn't
-#' kill the connection, but the server logs the issue).
-#'
-#' Advances `conn$buffer` past consumed bytes after every successful
-#' parse.
-#'
-#' If `conn$close_after_response` becomes TRUE (e.g. 3 failed auth
-#' attempts in the handler), the connection is disconnected after the
-#' current frame's response is sent.
-#'
-#' @param conn Connection env.
-#' @param server Server env.
-#'
-#' @return Integer - number of frames dispatched this call.
-#'
-#' @author EDG
-#' @keywords internal
-#' @noRd
-drain_buffer <- function(conn, server) {
-  dispatched <- 0L
-  repeat {
-    parsed <- tryCatch(
-      decode_frame(conn[["buffer"]]),
-      error = function(e) {
-        write_frame(
-          conn,
-          encode_frame(
-            make_error(NA_character_, "malformed_frame", conditionMessage(e))
-          )
-        )
-        # Reset buffer - we can't safely resume from a corrupted point.
-        conn[["buffer"]] <- raw(0L)
-        list(complete = FALSE)
-      }
-    )
-    if (!isTRUE(parsed[["complete"]])) {
-      break
+  frame <- tryCatch(
+    decode_frame(bytes),
+    error = function(e) {
+      make_error(NA_character_, "malformed_frame", conditionMessage(e))
     }
-
-    consumed <- parsed[["consumed"]]
-    if (consumed > 0L && consumed <= length(conn[["buffer"]])) {
-      conn[["buffer"]] <- conn[["buffer"]][-(seq_len(consumed))]
-    } else if (consumed > 0L) {
-      conn[["buffer"]] <- raw(0L)
-    }
-
-    response <- dispatch_request(
-      conn,
-      list(header = parsed[["header"]], payload = parsed[["payload"]]),
-      server
-    )
-    if (!is.null(response)) {
-      # Two response shapes:
-      # - plain header: a list with `v` at the top level (most handlers)
-      # - {header, payload}: from `make_response_payload()` for binary slices
-      if (is.null(response[["v"]]) && !is.null(response[["header"]])) {
-        bytes <- encode_frame(response[["header"]], response[["payload"]])
-      } else {
-        bytes <- encode_frame(response)
-      }
-      ok <- write_frame(conn, bytes)
-      if (!ok) {
-        disconnect_connection(server, conn)
-        return(dispatched)
-      }
-    }
-    dispatched <- dispatched + 1L
-
-    if (isTRUE(conn[["close_after_response"]])) {
-      disconnect_connection(server, conn)
-      return(dispatched)
-    }
-  }
-  dispatched
-}
-
-
-#' One full read+drain pass for a single connection
-#'
-#' Pulls bytes from the socket, then dispatches every complete frame.
-#' On socket error, disconnects.
-#'
-#' @param conn Connection env.
-#' @param server Server env.
-#'
-#' @return Integer - frames dispatched.
-#'
-#' @author EDG
-#' @keywords internal
-#' @noRd
-process_connection <- function(conn, server) {
-  if (!read_into_buffer(conn)) {
+  )
+  decoded <- !is.null(frame[["header"]])
+  response <- if (decoded) dispatch_request(conn, frame, server) else frame
+  sent <- is.null(response) || write_frame(conn, encode_response(response))
+  is_auth <- decoded && identical(frame[["header"]][["method"]], "auth")
+  if (
+    !sent ||
+      isTRUE(conn[["close_after_response"]]) ||
+      (!isTRUE(conn[["authed"]]) && !is_auth)
+  ) {
     disconnect_connection(server, conn)
-    return(0L)
   }
-  drain_buffer(conn, server)
+  decoded
 }
 
 
@@ -285,8 +252,9 @@ process_connection <- function(conn, server) {
 
 #' Send an event to every connection attached to a session
 #'
-#' When the session has no connections attached, the event is buffered
-#' on the session via `push_event()` for replay on next attach.
+#' When the session has no connections attached, or the last of them fails
+#' during delivery, the event is buffered on the session via `push_event()` for
+#' replay on next attach.
 #'
 #' Errors writing to one connection trigger a disconnect for that
 #' connection but don't block delivery to others.
@@ -310,6 +278,7 @@ emit_event_to_session <- function(server, session, event) {
   for (cid in session[["connections"]]) {
     conn <- server[["connections"]][[cid]]
     if (is.null(conn)) {
+      detach_connection(session, cid)
       next
     }
     ok <- write_frame(conn, buf)
@@ -318,6 +287,10 @@ emit_event_to_session <- function(server, session, event) {
       next
     }
     sent <- sent + 1L
+  }
+  if (sent == 0L) {
+    # Every write failed: the session has no connection left.
+    push_event(session, event)
   }
   sent
 }
@@ -507,17 +480,17 @@ poll_active_jobs <- function(server) {
           }
         },
         error = function(e) {
-          warning(
-            sprintf(
-              "rtemislive: poll failed for job %s: %s",
-              job[["id"]],
-              conditionMessage(e)
-            ),
-            call. = FALSE
+          rtemis.core::warn(
+            "Poll failed for job ",
+            job[["id"]],
+            ": ",
+            conditionMessage(e),
+            package = "rtemis.server"
           )
           job[["poll_error_count"]] <- (job[["poll_error_count"]] %||% 0L) + 1L
           if (job[["poll_error_count"]] >= 3L) {
             job[["status"]] <- "failed"
+            job[["completed_at"]] <- Sys.time()
             job[["error"]] <- list(
               code = "internal_error",
               message = paste0(
@@ -526,6 +499,10 @@ poll_active_jobs <- function(server) {
               )
             )
             job[["emitted_resolution"]] <- TRUE
+            tryCatch(
+              emit_event_to_session(server, s, job_resolution_event(job)),
+              error = function(e) NULL
+            )
           }
           "error"
         }
@@ -614,7 +591,7 @@ maybe_tick_periodic <- function(server) {
   now <- Sys.time()
   out <- list(heartbeats_emitted = 0L, gc_ran = FALSE)
   # `heartbeat_interval <= 0` (the default) disables emission entirely. The
-  # heartbeat carries only live daemon/job counts, which clients now fetch on
+  # heartbeat carries only live daemon/job counts, which clients fetch on
   # demand via `info`; keep the emit path here so it can be re-enabled by
   # passing a positive interval.
   hb <- server[["heartbeat_interval"]]
@@ -638,51 +615,70 @@ maybe_tick_periodic <- function(server) {
 }
 
 
-# %% Main loop --------------------------------------------------------------
+# %% Daemons -----------------------------------------------------------------
 
-#' Run one full tick of the event loop
+#' Replace daemons that died
 #'
-#' Order matches spec paragraph 13. WS-accept is delegated to the caller (the
-#' real `serve()` integrates with `nanonext::stream`); tests
-#' construct connections manually.
+#' mirai leaves a pool one daemon smaller after a crash. At most three
+#' replacements start in any 60 seconds, so a job that kills every daemon it
+#' meets does not start processes without bound; queued jobs wait meanwhile. A
+#' launched daemon has 30 seconds to connect before it counts as missing.
 #'
 #' @param server Server env.
 #'
-#' @return Named list summarising what happened this tick.
+#' @return Integer - number of daemons launched.
 #'
 #' @author EDG
 #' @keywords internal
 #' @noRd
-loop_tick <- function(server) {
-  conn_ids <- ls(server[["connections"]])
-  frames_dispatched <- 0L
-  for (cid in conn_ids) {
-    conn <- server[["connections"]][[cid]]
-    if (is.null(conn)) {
-      next
-    }
-    frames_dispatched <- frames_dispatched + process_connection(conn, server)
+replace_daemons <- function(server) {
+  n_daemons <- server[["n_daemons"]]
+  if (is.null(n_daemons)) {
+    return(0L)
   }
-
-  tick <- host_tick(server)
-
-  list(
-    frames_dispatched = frames_dispatched,
-    progress_routed = tick[["progress_routed"]],
-    jobs_resolved = tick[["jobs_resolved"]],
-    jobs_promoted = tick[["jobs_promoted"]],
-    heartbeats_emitted = tick[["heartbeats_emitted"]],
-    gc_ran = tick[["gc_ran"]]
+  now <- Sys.time()
+  seconds_since <- function(t) as.numeric(difftime(now, t, units = "secs"))
+  # `status()` queries the dispatcher; once a second is enough.
+  if (seconds_since(server[["last_daemon_check"]] %||% (now - 1)) < 1) {
+    return(0L)
+  }
+  server[["last_daemon_check"]] <- now
+  missing_daemons <- n_daemons - daemon_count()
+  if (missing_daemons <= 0L) {
+    server[["daemons_ready"]] <- TRUE
+    return(0L)
+  }
+  if (
+    !isTRUE(server[["daemons_ready"]]) &&
+      seconds_since(server[["last_launch"]]) < 30
+  ) {
+    return(0L)
+  }
+  recent <- Filter(function(t) seconds_since(t) < 60, server[["replacements"]])
+  n <- min(missing_daemons, 3L - length(recent))
+  if (n <= 0L) {
+    return(0L)
+  }
+  rtemis.core::warn(
+    missing_daemons,
+    " of ",
+    n_daemons,
+    " daemons ended unexpectedly. Starting ",
+    n,
+    ".",
+    package = "rtemis.server"
   )
+  mirai::launch_local(n, .compute = .RTEMISLIVE_COMPUTE)
+  server[["replacements"]] <- c(recent, rep(list(now), n))
+  server[["last_launch"]] <- now
+  server[["daemons_ready"]] <- FALSE
+  n
 }
 
 
+# %% Host tick ---------------------------------------------------------------
+
 #' Run one tick of background host work
-#'
-#' Drain progress, poll resolutions, promote queued jobs, run periodic
-#' tasks. Shared by `loop_tick()` (manual/test driving) and by
-#' `serve()`'s `later`-scheduled `schedule_tick` closure. Keep these in
-#' sync by calling this helper - do NOT inline the sequence again.
 #'
 #' @param server Server env.
 #'
@@ -692,34 +688,19 @@ loop_tick <- function(server) {
 #' @keywords internal
 #' @noRd
 host_tick <- function(server) {
+  unauthenticated_closed <- drop_unauthenticated(server)
+  daemons_launched <- replace_daemons(server)
   progress_routed <- drain_and_route_progress(server)
   jobs_resolved <- poll_active_jobs(server)
   jobs_promoted <- promote_queued_jobs(server)
   periodic <- maybe_tick_periodic(server)
   list(
+    unauthenticated_closed = unauthenticated_closed,
+    daemons_launched = daemons_launched,
     progress_routed = progress_routed,
     jobs_resolved = jobs_resolved,
     jobs_promoted = jobs_promoted,
     heartbeats_emitted = periodic[["heartbeats_emitted"]],
     gc_ran = periodic[["gc_ran"]]
   )
-}
-
-
-#' Drive the event loop until `server$stop_requested` is set
-#'
-#' @param server Server env.
-#' @param tick_ms Numeric. Sleep between ticks in milliseconds (default 5).
-#'
-#' @return `NULL`, invisibly.
-#'
-#' @author EDG
-#' @keywords internal
-#' @noRd
-run_loop <- function(server, tick_ms = 5) {
-  while (!isTRUE(server[["stop_requested"]])) {
-    loop_tick(server)
-    Sys.sleep(tick_ms / 1000)
-  }
-  invisible(NULL)
 }

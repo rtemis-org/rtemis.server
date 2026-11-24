@@ -37,6 +37,13 @@ test_that("encode_frame() rejects non-raw payload", {
 })
 
 
+test_that("encode_frame() writes numbers with 15 significant digits", {
+  x <- list(lr = 0.000123456, lambda = 1.5e-9, estimate = 0.123456789012345)
+  res <- decode_frame(encode_frame(list(id = "r", result = x)))
+  expect_identical(res[["header"]][["result"]], x)
+})
+
+
 # encode_frame: with payload ----
 test_that("encode_frame() with payload appends payload bytes after header", {
   payload <- as.raw(1:10)
@@ -83,29 +90,40 @@ test_that("encode_frame() preserves user-supplied v", {
 })
 
 
-# decode_frame: incomplete inputs ----
-test_that("decode_frame() returns complete=FALSE on empty buffer", {
-  res <- decode_frame(raw(0))
-  expect_false(res[["complete"]])
-})
-
-test_that("decode_frame() returns complete=FALSE when only length prefix arrived", {
+# decode_frame: one frame per message ----
+test_that("decode_frame() rejects a message shorter than its frame", {
+  expect_error(decode_frame(raw(0)), "too short")
   buf <- encode_frame(list(method = "ping", id = "x"))
-  res <- decode_frame(buf[1:4])
-  expect_false(res[["complete"]])
+  expect_error(decode_frame(buf[1:3]), "too short")
+  expect_error(decode_frame(buf[1:4]), "0 bytes received")
+  expect_error(decode_frame(buf[1:(length(buf) - 2L)]), "bytes received")
+  with_payload <- encode_frame(
+    list(method = "data.upload", id = "x"),
+    payload = as.raw(1:100)
+  )
+  expect_error(
+    decode_frame(with_payload[1:(length(with_payload) - 50L)]),
+    "payload of 100 bytes declared, 50 bytes received"
+  )
 })
 
-test_that("decode_frame() returns complete=FALSE when header is truncated", {
-  buf <- encode_frame(list(method = "ping", id = "x"))
-  res <- decode_frame(buf[1:(length(buf) - 2L)])
-  expect_false(res[["complete"]])
+test_that("decode_frame() rejects bytes after the frame", {
+  buf <- encode_frame(list(method = "ping", id = "1"))
+  expect_error(decode_frame(c(buf, buf)), "payload of 0 bytes declared")
 })
 
-test_that("decode_frame() returns complete=FALSE when payload is truncated", {
-  payload <- as.raw(1:100)
-  buf <- encode_frame(list(method = "data.upload", id = "x"), payload = payload)
-  res <- decode_frame(buf[1:(length(buf) - 50L)])
-  expect_false(res[["complete"]])
+test_that("decode_frame() rejects a payload length that is not a count", {
+  for (bytes in list(-1, 1.5, "ten", list(1, 2))) {
+    buf <- encode_frame(list(id = "x"))
+    json <- charToRaw(.wire_json(list(payload = list(bytes = bytes))))
+    buf <- c(writeBin(length(json), raw(), size = 4L, endian = "big"), json)
+    expect_error(decode_frame(buf), "non-negative integer")
+  }
+})
+
+test_that("decode_frame() reads an empty payload as raw(0)", {
+  buf <- encode_frame(list(id = "x"), payload = raw(0))
+  expect_identical(decode_frame(buf)[["payload"]], raw(0))
 })
 
 
@@ -114,8 +132,6 @@ test_that("decode_frame() roundtrips a header-only frame", {
   hdr_in <- list(method = "ping", id = "req-1", params = list(token = "abc"))
   buf <- encode_frame(hdr_in)
   res <- decode_frame(buf)
-  expect_true(res[["complete"]])
-  expect_equal(res[["consumed"]], length(buf))
   expect_null(res[["payload"]])
   expect_equal(res[["header"]][["method"]], "ping")
   expect_equal(res[["header"]][["id"]], "req-1")
@@ -130,23 +146,8 @@ test_that("decode_frame() roundtrips a frame with payload", {
     payload = payload_in
   )
   res <- decode_frame(buf)
-  expect_true(res[["complete"]])
-  expect_equal(res[["consumed"]], length(buf))
   expect_equal(res[["payload"]], payload_in)
   expect_equal(res[["header"]][["payload"]][["bytes"]], length(payload_in))
-})
-
-test_that("decode_frame() advances consumed past one frame, leaving extra bytes", {
-  buf1 <- encode_frame(list(method = "ping", id = "1"))
-  buf2 <- encode_frame(list(method = "ping", id = "2"))
-  combined <- c(buf1, buf2)
-  res1 <- decode_frame(combined)
-  expect_true(res1[["complete"]])
-  expect_equal(res1[["consumed"]], length(buf1))
-  remaining <- combined[(res1[["consumed"]] + 1L):length(combined)]
-  res2 <- decode_frame(remaining)
-  expect_true(res2[["complete"]])
-  expect_equal(res2[["header"]][["id"]], "2")
 })
 
 
@@ -214,7 +215,6 @@ test_that("response frame round-trips through encode/decode", {
   resp <- make_response("req-1", result = list(connection_id = "c-1"))
   buf <- encode_frame(resp)
   res <- decode_frame(buf)
-  expect_true(res[["complete"]])
   expect_true(res[["header"]][["ok"]])
   expect_equal(res[["header"]][["id"]], "req-1")
   expect_equal(res[["header"]][["result"]][["connection_id"]], "c-1")
@@ -227,7 +227,6 @@ test_that("event frame round-trips through encode/decode", {
   )
   buf <- encode_frame(ev)
   res <- decode_frame(buf)
-  expect_true(res[["complete"]])
   expect_equal(res[["header"]][["event"]], "job.progress")
   expect_equal(res[["header"]][["data"]][["job_id"]], "j-1")
 })

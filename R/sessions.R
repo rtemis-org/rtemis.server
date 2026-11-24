@@ -1,6 +1,9 @@
+# sessions.R
+# ::rtemis.server::
 # 2026- EDG rtemis.org
 
-# Session registry and lifecycle for rtemislive. See specs/rtemislive.md paragraph 5.
+# Session registry and lifecycle for rtemislive.
+# spec: rtemislive.md 5
 #
 # Storage model
 # -------------
@@ -22,8 +25,8 @@
 #   name          character - user-chosen or `untitled-<n>`
 #   created_at    POSIXct
 #   last_seen     POSIXct - touched on any activity
-#   jobs          env - job_id -> job env (filled by rtemislive_jobs.R)
-#   data          env - data_handle -> data env (filled by rtemislive_data.R)
+#   jobs          env - job_id -> job env (filled by jobs.R)
+#   data          env - data_handle -> data env (filled by data.R)
 #   connections   character - vector of attached connection_ids
 #   event_buffer  list - bounded ring of unsent push events
 #   events_dropped integer - count of dropped events since last drain
@@ -53,7 +56,7 @@ session_registry <- function() {
 
 #' Clear the session registry
 #'
-#' Removes every session and its state. Used at server shutdown and in tests.
+#' Removes every session and its state. Used when the server stops and in tests.
 #'
 #' @return `NULL`, invisibly.
 #'
@@ -345,9 +348,8 @@ rename_session <- function(session, new_name) {
 
 #' Garbage-collect idle sessions
 #'
-#' A session is eligible for GC when it has zero attached connections
-#' **and** `last_seen` is older than `ttl` seconds. Active sessions are
-#' never collected (their jobs may still be running).
+#' A session is collected when it has no attached connection, no unfinished
+#' job, and a `last_seen` older than `ttl` seconds.
 #'
 #' @param now POSIXct: Reference time (default `Sys.time()`).
 #' @param ttl Numeric, seconds: Default 86400 (24 h, spec paragraph 5.7).
@@ -364,6 +366,7 @@ gc_sessions <- function(now = Sys.time(), ttl = 86400) {
     s <- reg[[id]]
     if (
       length(s[["connections"]]) == 0L &&
+        count_unfinished_jobs(s) == 0L &&
         difftime(now, s[["last_seen"]], units = "secs") > ttl
     ) {
       expired <- c(expired, id)

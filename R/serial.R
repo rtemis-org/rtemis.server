@@ -1,7 +1,9 @@
+# serial.R
+# ::rtemis.server::
 # 2026- EDG rtemis.org
 
 # Arrow IPC encoders for `job.result` payloads. Pairs with
-# `decode_arrow_ipc()` in `rtemislive_data.R` (which goes the other way).
+# `decode_arrow_ipc()` in `data.R` (which goes the other way).
 #
 # Encoders return raw vectors ready to attach as the `payload` of a wire
 # frame. The matching response header carries a small JSON pointer
@@ -377,7 +379,7 @@ assignments_table <- function(clu) {
 #' handler wants to ship a binary payload alongside the JSON header, it
 #' returns the result of `make_response_payload()` instead. The loop
 #' detects the wrapped form by the absence of `v` at the top level (see
-#' `process_connection()` in `rtemislive_loop.R`).
+#' `encode_response()` in `loop.R`).
 #'
 #' @param id Character: Request correlation id.
 #' @param result Optional list: Response JSON body.
@@ -517,12 +519,7 @@ record_json <- function(result) {
   if (is.null(rec)) {
     return(list(available = FALSE, reason = "no_input_config"))
   }
-  bytes <- length(charToRaw(as.character(jsonlite::toJSON(
-    rec,
-    auto_unbox = TRUE,
-    null = "null",
-    na = "null"
-  ))))
+  bytes <- length(charToRaw(.wire_json(rec)))
   if (bytes > .RTEMISLIVE_RECORD_MAX) {
     return(list(available = FALSE, reason = "too_large", bytes = bytes))
   }

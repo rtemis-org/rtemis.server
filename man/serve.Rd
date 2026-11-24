@@ -21,52 +21,48 @@ serve(
 )
 }
 \arguments{
-\item{port}{Integer: TCP port to listen on. Must be in \code{1024:49151}.
-Defaults to \code{5757}, or the value of \code{RTEMISLIVE_PORT} if set.}
+\item{port}{Optional Integer [1024, 49151]: TCP port to listen on. If
+\code{NULL}, defaults to the environment variable \code{RTEMISLIVE_PORT}, or to the
+standard rtemislive port if that is unset.}
 
-\item{host}{Character: Bind address. Defaults to \code{"127.0.0.1"}.
-Server refuses to start on any other address.}
+\item{host}{Character \{"127.0.0.1", "localhost"\}: Loopback address to bind.}
 
-\item{n_daemons}{Integer: Number of mirai worker processes. Default
-\code{1L}: rtemis training jobs already parallelize internally (OpenMP
-for gradient boosters, parallel tuning, parallel outer resampling),
-so a single daemon runs one job at a time with full core access.
-Increase only when you want multiple simultaneous jobs and accept
-that each gets a fraction of the cores.}
+\item{n_daemons}{Integer [1, Inf): Number of worker processes. rtemis
+training jobs parallelize internally, so one worker runs one job at a time
+with access to every core. With more workers, simultaneous jobs share the
+cores.}
 
-\item{origins}{Optional character vector: Allowed \code{Origin} headers
-on the WS upgrade. \code{NULL} uses the spec defaults
-(\code{live.rtemis.org}, \code{localhost:3000}, etc.).}
+\item{origins}{Optional Character: Allowed \code{Origin} headers of the WebSocket
+upgrade request. If \code{NULL}, defaults to \verb{https://live.rtemis.org},
+\verb{http://localhost:3000}, and \verb{http://127.0.0.1:3000}.}
 
-\item{token}{Optional character scalar: Auth token clients must
-present. \code{NULL} generates a fresh 8-byte random token.}
+\item{token}{Optional Character: Token that clients must present, at least 16
+printable ASCII characters without spaces. If \code{NULL}, a random token is
+generated and printed. Required when \code{verbosity} is less than 1.}
 
-\item{heartbeat_interval}{Numeric, seconds: Per-session \code{heartbeat}
-tick rate. \code{0} (the default) disables heartbeat emission; pass a
-positive value to re-enable it. The heartbeat carries only live
-daemon/job counts, which clients fetch on demand via \code{info}.}
+\item{heartbeat_interval}{Numeric [0, Inf): Seconds between \code{heartbeat}
+events. \code{0} disables them.}
 
-\item{session_ttl}{Numeric, seconds: Idle-session GC TTL.}
+\item{session_ttl}{Numeric (0, Inf): Seconds after its last activity at which
+a session without a connection or an unfinished job is removed.}
 
-\item{data_ttl}{Numeric, seconds: Idle-data-handle GC TTL.}
+\item{data_ttl}{Numeric (0, Inf): Seconds after its last use at which an
+uploaded dataset is removed.}
 
-\item{gc_interval}{Numeric, seconds: How often GC runs.}
+\item{gc_interval}{Numeric (0, Inf): Seconds between removal passes.}
 
-\item{tick_ms}{Integer milliseconds: Background tick rate for the
-non-WS periodic work scheduled via \code{later}. Default \code{50}.}
+\item{tick_ms}{Numeric [1, Inf): Milliseconds between passes of background
+work.}
 
-\item{max_concurrent}{Integer: Cap on concurrent jobs across all
-sessions. Defaults to \code{n_daemons}: no point queuing more running
-jobs than there are workers.}
+\item{max_concurrent}{Integer [1, Inf): Maximum number of jobs that run at the
+same time, across all sessions. Further jobs are queued.}
 
-\item{max_sessions}{Integer: Cap on the number of sessions.}
+\item{max_sessions}{Integer [1, Inf): Maximum number of sessions.}
 
-\item{verbosity}{Integer: \verb{>= 1L} prints the startup banner.}
+\item{verbosity}{Integer [0, Inf): Verbosity level. \code{0L} prints nothing.}
 }
 \value{
-Server env, invisibly. Returned after the loop exits so
-callers (notably tests running the server on a mirai task) can
-inspect state.
+\code{NULL}, invisibly, after the server stops.
 }
 \description{
 Launches a local-only WebSocket server that bridges the rtemislive
@@ -75,26 +71,28 @@ async training, real-time progress, structured result transfer, and
 session-aware state across reconnects.
 }
 \details{
-Blocks until the user interrupts (Ctrl-C) or another mechanism sets
-\code{server$stop_requested}. See \code{specs/rtemislive.md} for the wire
-protocol and architectural details.
+Blocks until interrupted (Ctrl-C, or SIGINT to the R process), then returns.
+Stopping the server closes every connection, stops every job, and discards
+the sessions with their data and results.
+
+The server runs its worker processes on a mirai compute profile of its own,
+so daemons set by the caller keep running. One server runs per R process.
+
+A connection must come from an allowed origin and present the token within
+10 seconds. The third failed attempt closes it.
 }
 \examples{
 \dontrun{
-# Run on the default port; Ctrl-C to stop.
+# Blocks the session and listens on a local port. Ctrl-C stops the server.
 serve()
 
-# Multiple workers for a multi-user setup (each job gets fewer cores).
+# Two workers and a supplied token.
 serve(
-  port = 5757L,
-  n_daemons = 4L,
-  origins = c("http://localhost:3000"),
+  n_daemons = 2L,
+  origins = "http://localhost:3000",
   token = "abcd-1234-ef56-7890"
 )
 }
-}
-\seealso{
-\code{\link[=shutdown]{shutdown()}}
 }
 \author{
 EDG

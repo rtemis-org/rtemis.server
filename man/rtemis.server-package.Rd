@@ -7,8 +7,7 @@
 \title{rtemis.server: rtemis Server}
 \description{
 Local WebSocket server that bridges browser-based rtemislive clients
-to a persistent R session running rtemis. See \code{vignette("rtemislive")}
-(TODO) and \verb{specs/} for the wire protocol.
+to a persistent R session running rtemis. Start it with \code{\link[=serve]{serve()}}.
 }
 \details{
 \pkg{rtemis.server}: rtemis WebSocket server
@@ -18,6 +17,7 @@ Useful links:
 \itemize{
   \item \url{https://www.rtemis.org}
   \item \url{https://live.rtemis.org}
+  \item \url{https://docs.rtemis.org/r/server/}
   \item Report bugs at \url{https://github.com/rtemis-org/rtemis.server/issues}
 }
 

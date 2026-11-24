@@ -16,7 +16,7 @@ library(data.table)
 # File-level: ensure a daemon pool is available for the job-flow tests.
 # See note in test_jobs.R.
 if (!isTRUE(getOption("rtemislive.test_daemons_started"))) {
-  mirai::daemons(2L)
+  mirai::daemons(2L, .compute = .RTEMISLIVE_COMPUTE)
   options(rtemislive.test_daemons_started = TRUE)
 }
 
@@ -814,13 +814,13 @@ test_that("job.load's timing comes from the model's own session, not upload time
   conn <- authed_conn(server, attach_session = "s")
 
   trained <- train_glm_result(conn, server)
-  obs_session <- prop(trained, "session")
+  obs_session <- S7::prop(trained, "session")
   skip_if(
     is.null(obs_session),
     "fitted result carries no observability session"
   )
-  run_started <- prop(obs_session, "started")
-  run_finished <- prop(obs_session, "finished")
+  run_started <- S7::prop(obs_session, "started")
+  run_finished <- S7::prop(obs_session, "finished")
   skip_if(
     is.null(run_started) || is.null(run_finished),
     "session recorded no wall-clock bounds"

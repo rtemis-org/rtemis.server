@@ -1,3 +1,7 @@
+# rtemis.server-package.R
+# ::rtemis.server::
+# 2026- EDG rtemis.org
+
 #' \pkg{rtemis.server}: rtemis WebSocket server
 #'
 #' @name rtemis.server-package
@@ -6,13 +10,10 @@
 #'
 #' @description
 #' Local WebSocket server that bridges browser-based rtemislive clients
-#' to a persistent R session running rtemis. See `vignette("rtemislive")`
-#' (TODO) and `specs/` for the wire protocol.
+#' to a persistent R session running rtemis. Start it with [serve()].
 #'
-#' @import data.table later methods nanonext openssl rtemis.core S7 utils
-#' @importFrom jsonlite toJSON fromJSON
+#' @importFrom data.table := .SD let
 #' @importFrom rtemis to_json
-#' @importFrom rtemis setup_SuperConfigLive setup_SupervisedPreprocessor
 "_PACKAGE"
 
 NULL

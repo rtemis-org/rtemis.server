@@ -1,3 +1,5 @@
+# frame.R
+# ::rtemis.server::
 # 2026- EDG rtemis.org
 
 # Wire frame encode/decode for the rtemislive WebSocket protocol.
@@ -10,13 +12,12 @@
 # - When the header's `payload` field is non-null, the frame carries
 #   `payload$bytes` bytes of binary (typically Arrow IPC) data immediately
 #   after the header.
-# - All frames are sent and received as binary WebSocket frames
-#   (`textframes = FALSE` on `nanonext::stream`).
+# - Each frame is one binary WebSocket message. nanonext reassembles the
+#   fragments of a message and closes the connection on an incoming message
+#   larger than 1 MiB, so the limits below bind on outgoing frames.
 #
-# See specs/rtemislive.md paragraph 3.3 and paragraph 4 for the full wire format and envelope
-# shapes (request / response / event).
+# spec: rtemislive.md 3.3 (frame format) and 4 (envelope shapes)
 
-# Limits per spec paragraph 3.4
 .RTEMISLIVE_HEADER_MAX <- 1048576L # 1 MiB
 # Header is JSON metadata only (binary data travels in the payload),
 # but with tunable-grid hyperparameter arrays + a long features list +
@@ -25,6 +26,32 @@
 # malformed.
 .RTEMISLIVE_FRAME_MAX <- 268435456L # 256 MiB
 .RTEMISLIVE_PROTOCOL_V <- 1L
+
+
+# %% .wire_json ----
+#' Write an R object as wire JSON
+#'
+#' The one JSON writer of the package: frame headers, the size check of the run
+#' record, and the daemons' progress envelopes. Numbers are written with 15
+#' significant digits. The `jsonlite::toJSON()` default keeps 4 decimal places
+#' and would write a learning rate of 0.00012 as 0.0001.
+#'
+#' @param x List: Object to write.
+#'
+#' @return Character scalar.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+.wire_json <- function(x) {
+  as.character(jsonlite::toJSON(
+    x,
+    auto_unbox = TRUE,
+    null = "null",
+    na = "null",
+    digits = NA
+  ))
+}
 
 
 # %% encode_frame ----
@@ -69,13 +96,7 @@ encode_frame <- function(header, payload = NULL) {
     )
   }
 
-  json <- jsonlite::toJSON(
-    header,
-    auto_unbox = TRUE,
-    null = "null",
-    na = "null"
-  )
-  json_bytes <- charToRaw(as.character(json))
+  json_bytes <- charToRaw(.wire_json(header))
   header_len <- length(json_bytes)
 
   if (header_len > .RTEMISLIVE_HEADER_MAX) {
@@ -116,27 +137,15 @@ encode_frame <- function(header, payload = NULL) {
 
 
 # %% decode_frame ----
-#' Decode an rtemislive wire frame from a buffer
+#' Decode an rtemislive wire frame
 #'
-#' Streaming-friendly decode: callers maintain a per-connection raw buffer
-#' that grows as bytes arrive. They call `decode_frame()` on the buffer; if
-#' a complete frame is available, the function returns it along with the
-#' number of bytes consumed (so the caller can advance the buffer). If the
-#' buffer is short (incomplete frame), the function returns
-#' `list(complete = FALSE)` and the caller waits for more bytes.
+#' A frame is one complete WebSocket message. Aborts on malformed input:
+#' header length out of range, header JSON unparseable, and a message shorter
+#' or longer than the header declares.
 #'
-#' Throws on malformed input (header JSON unparseable, header_len exceeds
-#' limits). Truncation alone is not an error - it just means more bytes
-#' are needed.
+#' @param buf Raw vector: The message.
 #'
-#' @param buf Raw vector: The current connection buffer.
-#'
-#' @return Named list:
-#'
-#' - `complete = FALSE` - buffer holds an incomplete frame; wait for more.
-#' - `complete = TRUE`, `header = <list>`, `payload = <raw|NULL>`,
-#'   `consumed = <integer>` - a complete frame has been parsed; advance
-#'   the buffer by `consumed` bytes.
+#' @return Named list: `header`, a list, and `payload`, a raw vector or `NULL`.
 #'
 #' @author EDG
 #' @keywords internal
@@ -148,7 +157,11 @@ decode_frame <- function(buf) {
 
   n <- length(buf)
   if (n < 4L) {
-    return(list(complete = FALSE))
+    rtemis.core::abort(
+      "Malformed frame: ",
+      n,
+      " bytes is too short for the header length."
+    )
   }
 
   header_len <- readBin(
@@ -160,10 +173,8 @@ decode_frame <- function(buf) {
     signed = TRUE
   )
   if (header_len < 0L || header_len > .RTEMISLIVE_HEADER_MAX) {
-    # Capture the first 32 bytes of the buffer as hex so we can identify
-    # what kind of payload tripped us up - Arrow IPC streams, garbage,
-    # leftover bytes from a desynced previous frame, etc. all have
-    # distinctive prefixes.
+    # The first bytes identify what was sent instead of a frame, such as a
+    # bare Arrow IPC stream.
     preview_n <- min(32L, n)
     preview <- paste(
       sprintf("%02x", as.integer(buf[1L:preview_n])),
@@ -183,10 +194,16 @@ decode_frame <- function(buf) {
 
   header_end <- 4L + header_len
   if (n < header_end) {
-    return(list(complete = FALSE))
+    rtemis.core::abort(
+      "Malformed frame: header of ",
+      header_len,
+      " bytes declared, ",
+      n - 4L,
+      " bytes received."
+    )
   }
 
-  header_bytes <- buf[5L:header_end]
+  header_bytes <- buf[4L + seq_len(header_len)]
   header <- tryCatch(
     jsonlite::fromJSON(rawToChar(header_bytes), simplifyVector = FALSE),
     error = function(e) {
@@ -206,53 +223,41 @@ decode_frame <- function(buf) {
   }
 
   payload_info <- header[["payload"]]
-  if (is.null(payload_info)) {
-    return(list(
-      complete = TRUE,
-      header = header,
-      payload = NULL,
-      consumed = header_end
-    ))
+  payload_len <- 0
+  if (!is.null(payload_info)) {
+    if (!is.list(payload_info) || is.null(payload_info[["bytes"]])) {
+      rtemis.core::abort(
+        "Malformed frame: header `payload` must be a `{bytes, format}` object."
+      )
+    }
+    payload_len <- payload_info[["bytes"]]
+    if (
+      !is.numeric(payload_len) ||
+        length(payload_len) != 1L ||
+        !is.finite(payload_len) ||
+        payload_len < 0 ||
+        payload_len != round(payload_len)
+    ) {
+      rtemis.core::abort(
+        "Malformed frame: payload bytes is not a non-negative integer."
+      )
+    }
   }
-
-  if (!is.list(payload_info) || is.null(payload_info[["bytes"]])) {
+  if (n != header_end + payload_len) {
     rtemis.core::abort(
-      "Malformed frame: header `payload` must be a `{bytes, format}` object."
+      "Malformed frame: payload of ",
+      payload_len,
+      " bytes declared, ",
+      n - header_end,
+      " bytes received."
     )
-  }
-
-  payload_len <- as.integer(payload_info[["bytes"]])
-  if (is.na(payload_len) || payload_len < 0L) {
-    rtemis.core::abort(
-      "Malformed frame: payload bytes is not a non-negative integer."
-    )
-  }
-
-  total <- header_end + payload_len
-  if (total > .RTEMISLIVE_FRAME_MAX) {
-    rtemis.core::abort(
-      "Malformed frame: frame size ",
-      total,
-      " exceeds limit ",
-      .RTEMISLIVE_FRAME_MAX,
-      "."
-    )
-  }
-  if (n < total) {
-    return(list(complete = FALSE))
-  }
-
-  payload <- if (payload_len == 0L) {
-    raw(0)
-  } else {
-    buf[(header_end + 1L):total]
   }
 
   list(
-    complete = TRUE,
     header = header,
-    payload = payload,
-    consumed = total
+    payload = if (!is.null(payload_info)) {
+      buf[header_end + seq_len(payload_len)]
+    }
   )
 }
 
@@ -264,7 +269,7 @@ decode_frame <- function(buf) {
 #' envelope that pairs with a request's `id`.
 #'
 #' @param id Character: Correlation id from the request.
-#' @param Optional result List: Response payload (success path).
+#' @param result Optional list: Response payload (success path).
 #'
 #' @return Named list ready to pass to `encode_frame()`.
 #'

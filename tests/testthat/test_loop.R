@@ -27,11 +27,9 @@ captor_conn <- function() {
   conn
 }
 
-# Stuff a request frame's raw bytes into a connection's read buffer.
-push_bytes <- function(conn, frame_list, payload = NULL) {
-  bytes <- encode_frame(frame_list, payload = payload)
-  conn[["buffer"]] <- c(conn[["buffer"]], bytes)
-  invisible(NULL)
+# Deliver a request to a connection as one WebSocket message.
+deliver <- function(conn, server, frame_list, payload = NULL) {
+  handle_message(conn, encode_frame(frame_list, payload = payload), server)
 }
 
 # Decode every frame captured by a captor connection.
@@ -56,7 +54,7 @@ test_that("new_server_state() returns an env with mutable fields", {
   expect_equal(s[["token"]], "test-toke-nnnn-9999")
   expect_true(is.environment(s[["connections"]]))
   expect_s3_class(s[["started_at"]], "POSIXct")
-  expect_false(s[["stop_requested"]])
+  expect_false(s[["running"]])
 })
 
 
@@ -85,15 +83,30 @@ test_that("disconnect_connection() removes from registry + detaches session", {
 })
 
 
-# drain_buffer: dispatches frames and writes responses --------------------
-test_that("drain_buffer() dispatches one frame, captor receives response", {
+test_that("disconnect_connection() closes the socket once", {
+  s <- make_server()
+  conn <- captor_conn()
+  n_closed <- 0L
+  conn[["close_socket"]] <- function() n_closed <<- n_closed + 1L
+  register_connection(s, conn)
+
+  disconnect_connection(s, conn)
+  disconnect_connection(s, conn)
+  expect_identical(n_closed, 1L)
+  expect_true(conn[["closed"]])
+})
+
+
+# handle_message ----
+test_that("handle_message() dispatches a frame and sends the response", {
   s <- make_server()
   conn <- captor_conn()
   register_connection(s, conn)
-  push_bytes(conn, req("auth", params = list(token = s[["token"]]), id = "r1"))
-
-  dispatched <- drain_buffer(conn, s)
-  expect_equal(dispatched, 1L)
+  expect_true(deliver(
+    conn,
+    s,
+    req("auth", params = list(token = s[["token"]]), id = "r1")
+  ))
   expect_length(conn[["sent"]], 1L)
 
   resp_hdr <- captured_decoded(conn)[[1L]]
@@ -102,52 +115,134 @@ test_that("drain_buffer() dispatches one frame, captor receives response", {
   expect_true(conn[["authed"]])
 })
 
-test_that("drain_buffer() handles multiple frames in one read", {
+test_that("handle_message() answers a malformed message and keeps going", {
   s <- make_server()
   conn <- captor_conn()
+  conn[["authed"]] <- TRUE
   register_connection(s, conn)
-  push_bytes(conn, req("auth", params = list(token = s[["token"]])))
-  push_bytes(conn, req("ping", id = "p1"))
-  push_bytes(conn, req("ping", id = "p2"))
+  expect_false(handle_message(conn, as.raw(1:3), s))
+  full <- encode_frame(req("ping"))
+  expect_false(handle_message(conn, full[1:5], s))
+  deliver(conn, s, req("ping"))
 
-  dispatched <- drain_buffer(conn, s)
-  expect_equal(dispatched, 3L)
-  expect_length(conn[["sent"]], 3L)
-  ids <- vapply(captured_decoded(conn), `[[`, character(1L), "id")
-  expect_true("p1" %in% ids)
-  expect_true("p2" %in% ids)
+  sent <- captured_decoded(conn)
+  expect_equal(sent[[1L]][["error"]][["code"]], "malformed_frame")
+  expect_equal(sent[[2L]][["error"]][["code"]], "malformed_frame")
+  expect_true(sent[[3L]][["ok"]])
 })
 
-test_that("drain_buffer() leaves an incomplete trailing frame in the buffer", {
+test_that("handle_message() rejects params that are not an object", {
   s <- make_server()
   conn <- captor_conn()
   register_connection(s, conn)
-  push_bytes(conn, req("auth", params = list(token = s[["token"]])))
-  full <- encode_frame(req("ping", id = "p1"))
-  conn[["buffer"]] <- c(conn[["buffer"]], full[1:5]) # truncated
-
-  before <- length(conn[["buffer"]])
-  dispatched <- drain_buffer(conn, s)
-  expect_equal(dispatched, 1L)
-  # The incomplete bytes remain
-  expect_equal(length(conn[["buffer"]]), 5L)
+  deliver(conn, s, req("auth", params = "token"))
+  err <- captured_decoded(conn)[[1L]][["error"]]
+  expect_equal(err[["code"]], "invalid_params")
 })
 
-test_that("drain_buffer() with close_after_response triggers disconnect", {
+test_that("the third failed auth attempt closes the connection for good", {
   s <- make_server()
   conn <- captor_conn()
+  n_closed <- 0L
+  conn[["close_socket"]] <- function() n_closed <<- n_closed + 1L
   register_connection(s, conn)
-  # 3 failed auth attempts => sets close_after_response
   for (i in 1:3) {
-    push_bytes(conn, req("auth", params = list(token = "wrong")))
+    expect_identical(n_closed, 0L)
+    deliver(conn, s, req("auth", params = list(token = "wrong")))
   }
-  drain_buffer(conn, s)
+  expect_identical(n_closed, 1L)
+  expect_length(conn[["sent"]], 3L)
   expect_false(conn[["id"]] %in% ls(s[["connections"]]))
+
+  # The correct token on the closed connection is ignored.
+  expect_false(deliver(
+    conn,
+    s,
+    req("auth", params = list(token = s[["token"]]))
+  ))
+  expect_false(conn[["authed"]])
+  expect_length(conn[["sent"]], 3L)
+  expect_identical(n_closed, 1L)
+})
+
+test_that("a response over the frame limits becomes an error response", {
+  big <- make_response("r9", list(x = strrep("a", .RTEMISLIVE_HEADER_MAX)))
+  header <- decode_frame(encode_response(big))[["header"]]
+  expect_equal(header[["id"]], "r9")
+  expect_false(header[["ok"]])
+  expect_equal(header[["error"]][["code"]], "internal_error")
 })
 
 
-# write_frame: send_raw or socket ----
-test_that("write_frame() prefers send_raw closure", {
+test_that("an unauthenticated connection may send `auth` only", {
+  s <- make_server()
+  long <- strrep("x", 1e5)
+  messages <- list(
+    encode_frame(req("ping")),
+    encode_frame(req("no.such.method")),
+    encode_frame(req(long)),
+    encode_frame(req("ping", id = long)),
+    encode_frame(list(v = 1L, id = "r")),
+    as.raw(1:3),
+    charToRaw(long)
+  )
+  for (bytes in messages) {
+    conn <- captor_conn()
+    register_connection(s, conn)
+    handle_message(conn, bytes, s)
+    expect_true(conn[["closed"]])
+    expect_length(conn[["sent"]], 1L)
+    # The reply has a bounded size whatever the request holds.
+    expect_lt(length(conn[["sent"]][[1L]]), 1000L)
+  }
+})
+
+test_that("an `auth` request with a long id gets a bounded reply", {
+  s <- make_server()
+  conn <- captor_conn()
+  register_connection(s, conn)
+  deliver(
+    conn,
+    s,
+    req("auth", params = list(token = "wrong"), id = strrep("x", 1e5))
+  )
+  expect_lt(length(conn[["sent"]][[1L]]), 1000L)
+  expect_false(conn[["authed"]])
+})
+
+
+# drop_unauthenticated ----
+test_that("drop_unauthenticated() closes connections past the deadline", {
+  s <- make_server()
+  late <- captor_conn()
+  authed <- captor_conn()
+  fresh <- captor_conn()
+  for (conn in list(late, authed, fresh)) {
+    register_connection(s, conn)
+  }
+  late[["unauthed_seconds"]] <- .RTEMISLIVE_AUTH_TIMEOUT
+  authed[["unauthed_seconds"]] <- .RTEMISLIVE_AUTH_TIMEOUT
+  authed[["authed"]] <- TRUE
+
+  expect_identical(drop_unauthenticated(s), 1L)
+  expect_setequal(
+    ls(s[["connections"]]),
+    c(authed[["id"]], fresh[["id"]])
+  )
+})
+
+test_that("drop_unauthenticated() counts a blocked loop as one second", {
+  s <- make_server()
+  conn <- captor_conn()
+  register_connection(s, conn)
+  s[["last_auth_check"]] <- Sys.time() - 3600
+  expect_identical(drop_unauthenticated(s), 0L)
+  expect_identical(conn[["unauthed_seconds"]], 1)
+})
+
+
+# write_frame ----
+test_that("write_frame() sends through send_raw", {
   conn <- new_connection()
   captured <- NULL
   conn[["send_raw"]] <- function(b) {
@@ -158,7 +253,7 @@ test_that("write_frame() prefers send_raw closure", {
   expect_equal(rawToChar(captured), "hi")
 })
 
-test_that("write_frame() returns FALSE when neither send_raw nor socket", {
+test_that("write_frame() returns FALSE without send_raw", {
   conn <- new_connection()
   ok <- write_frame(conn, charToRaw("hi"))
   expect_false(ok)
@@ -167,6 +262,15 @@ test_that("write_frame() returns FALSE when neither send_raw nor socket", {
 test_that("write_frame() returns FALSE if the send_raw closure errors", {
   conn <- new_connection()
   conn[["send_raw"]] <- function(b) stop("boom")
+  expect_false(write_frame(conn, charToRaw("hi")))
+})
+
+test_that("write_frame() returns FALSE if send_raw returns an errorValue", {
+  # As `ws$send()` does on a closed connection.
+  conn <- new_connection()
+  conn[["send_raw"]] <- function(b) {
+    structure(7L, class = c("errorValue", "try-error"))
+  }
   expect_false(write_frame(conn, charToRaw("hi")))
 })
 
@@ -201,6 +305,22 @@ test_that("emit_event_to_session() buffers when no connections attached", {
   sent <- emit_event_to_session(s, sess, ev)
   expect_equal(sent, 0L)
   expect_length(sess[["event_buffer"]], 1L)
+})
+
+test_that("emit_event_to_session() buffers when the last connection fails", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  s <- make_server()
+  bad <- new_connection()
+  bad[["send_raw"]] <- function(b) stop("nope")
+  register_connection(s, bad)
+  sess <- new_session("x")
+  attach_connection(sess, bad[["id"]])
+  bad[["session_id"]] <- sess[["id"]]
+
+  ev <- make_event("job.complete", data = list(job_id = "job-1"))
+  expect_equal(emit_event_to_session(s, sess, ev), 0L)
+  expect_identical(sess[["event_buffer"]], list(ev))
 })
 
 test_that("emit_event_to_session() drops the failing connection but keeps others", {
@@ -358,27 +478,30 @@ test_that("gc_tick() returns dropped session ids and updates last_gc", {
 })
 
 
-# loop_tick: combines steps ----
-test_that("loop_tick() dispatches connection frames and reports counts", {
+test_that("gc_sessions() keeps an idle session with an unfinished job", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  sess <- new_session("busy")
+  sess[["last_seen"]] <- Sys.time() - 1e6
+  job <- new.env(parent = emptyenv())
+  job[["status"]] <- "running"
+  sess[["jobs"]][["job-1"]] <- job
+  expect_length(gc_sessions(ttl = 60), 0L)
+  job[["status"]] <- "complete"
+  expect_equal(gc_sessions(ttl = 60), sess[["id"]])
+})
+
+
+# host_tick ----
+test_that("host_tick() reports the counts of each step", {
   clear_sessions()
   on.exit(clear_sessions(), add = TRUE)
   s <- make_server(heartbeat_interval = 3600, gc_interval = 3600)
-  conn <- captor_conn()
-  register_connection(s, conn)
-  push_bytes(conn, req("auth", params = list(token = s[["token"]])))
-  push_bytes(conn, req("ping"))
-
-  res <- loop_tick(s)
-  expect_equal(res[["frames_dispatched"]], 2L)
+  res <- host_tick(s)
+  expect_equal(res[["unauthenticated_closed"]], 0L)
+  expect_equal(res[["daemons_launched"]], 0L)
   expect_equal(res[["progress_routed"]], 0L)
   expect_equal(res[["jobs_resolved"]], 0L)
   expect_equal(res[["heartbeats_emitted"]], 0L)
   expect_false(res[["gc_ran"]])
-  expect_length(conn[["sent"]], 2L)
-})
-
-test_that("run_loop() exits when stop_requested is set", {
-  s <- make_server(heartbeat_interval = 3600, gc_interval = 3600)
-  s[["stop_requested"]] <- TRUE
-  expect_silent(run_loop(s, tick_ms = 1))
 })

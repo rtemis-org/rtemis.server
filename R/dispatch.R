@@ -1,7 +1,9 @@
+# dispatch.R
+# ::rtemis.server::
 # 2026- EDG rtemis.org
 
-# Method dispatch table and request handlers for rtemislive. See
-# specs/rtemislive.md paragraph 5 (sessions) and paragraph 6 (methods).
+# Method dispatch table and request handlers for rtemislive.
+# spec: rtemislive.md 5 (sessions) and 6 (methods)
 #
 # This file contains:
 #
@@ -13,9 +15,8 @@
 # - Session-level handlers: `session.list`, `session.create`,
 #   `session.join`, `session.detach`, `session.rename`, `session.delete`,
 #   `session.info`
-#
-# Data and job handlers (data.*, train, job.*) live in a follow-up
-# turn and will plug into the same table.
+# - Data handlers (`data.*`) and job handlers (`train`, `decomp`, `cluster`,
+#   `job.*`)
 
 # %% Connection state --------------------------------------------------------
 
@@ -35,20 +36,21 @@ new_connection_id <- function() {
 
 #' Create a new connection state object
 #'
-#' Connections are plain envs (mutable state). `send_raw` is an injectable
-#' closure the host event loop installs to deliver outbound frames on the
-#' underlying nanonext stream. In tests it can be `NULL` (handlers don't
-#' use it directly - they return the response envelope to the caller).
+#' Connections are plain envs (mutable state). `send_raw` and `close_socket`
+#' are the closures over the WebSocket that `open_connection()` installs.
+#' Handlers return the response envelope to the caller and use neither, so
+#' tests may leave them `NULL`.
 #'
-#' @param id Character scalar or `NULL`: Auto-generated if omitted.
-#' @param send_raw Function or `NULL`: Sends a raw vector on the wire.
+#' @param id Optional Character: Connection id. If `NULL`, one is generated.
+#' @param send_raw Optional Function: Sends a raw vector on the wire.
+#' @param close_socket Optional Function: Closes the WebSocket.
 #'
 #' @return Connection env.
 #'
 #' @author EDG
 #' @keywords internal
 #' @noRd
-new_connection <- function(id = NULL, send_raw = NULL) {
+new_connection <- function(id = NULL, send_raw = NULL, close_socket = NULL) {
   c_env <- new.env(parent = emptyenv())
   c_env[["id"]] <- if (is.null(id)) new_connection_id() else id
   c_env[["authed"]] <- FALSE
@@ -56,9 +58,11 @@ new_connection <- function(id = NULL, send_raw = NULL) {
   c_env[["created_at"]] <- Sys.time()
   c_env[["last_seen"]] <- Sys.time()
   c_env[["auth_attempts"]] <- 0L
+  c_env[["unauthed_seconds"]] <- 0
   c_env[["close_after_response"]] <- FALSE
-  c_env[["buffer"]] <- raw(0L)
+  c_env[["closed"]] <- FALSE
   c_env[["send_raw"]] <- send_raw
+  c_env[["close_socket"]] <- close_socket
   c_env
 }
 
@@ -101,12 +105,9 @@ connection_session <- function(conn) {
 #' Default server state object
 #'
 #' An environment (reference semantics) holding the server's mutable
-#' state: configuration knobs the dispatcher reads, the connection
-#' registry, timer state, and handles to the WS listener and progress
-#' pull socket.
-#'
-#' Tests construct this directly; the real `serve()` builds
-#' it once at startup and feeds the same env to every tick of the loop.
+#' state: configuration the dispatcher reads, the connection registry, timer
+#' state, and handles to the listener and the progress pull socket. `serve()`
+#' builds one per run.
 #'
 #' @param token Character. Expected auth token.
 #' @param origins Character vector. Allowed WS origins.
@@ -146,10 +147,18 @@ new_server_state <- function(
   e[["data_ttl"]] <- data_ttl
   e[["gc_interval"]] <- gc_interval
   e[["started_at"]] <- started_at
-  # Mutable loop state - initialised by the loop, not the dispatcher.
   e[["connections"]] <- new.env(parent = emptyenv()) # conn_id -> conn env
-  e[["ws_listener"]] <- NULL
+  # Resources created by `serve()` and released by `stop_server()`.
+  e[["http"]] <- NULL
   e[["progress_sock"]] <- NULL
+  e[["cancel_tick"]] <- NULL
+  e[["workers_started"]] <- FALSE
+  e[["running"]] <- FALSE
+  # Daemon supervision (`replace_daemons()`).
+  e[["n_daemons"]] <- NULL
+  e[["daemons_ready"]] <- FALSE
+  e[["replacements"]] <- list()
+  # Timers.
   e[["last_heartbeat"]] <- started_at
   e[["last_gc"]] <- started_at
   e[["stop_requested"]] <- FALSE
@@ -183,8 +192,28 @@ dispatch_request <- function(conn, frame, server) {
   req_id <- header[["id"]]
   if (is.null(req_id)) {
     req_id <- NA_character_
+  } else if (
+    !is.character(req_id) ||
+      length(req_id) != 1L ||
+      nchar(req_id, type = "bytes") > .RTEMISLIVE_ID_MAX
+  ) {
+    return(make_error(
+      NA_character_,
+      "malformed_frame",
+      paste0(
+        "`id` must be a string of at most ",
+        .RTEMISLIVE_ID_MAX,
+        " bytes."
+      )
+    ))
   }
   method <- header[["method"]]
+  # Before authentication only `auth` is read. The message is fixed: one that
+  # repeats the request would let a client without the token choose how many
+  # bytes the server sends it.
+  if (!isTRUE(conn[["authed"]]) && !identical(method, "auth")) {
+    return(make_error(req_id, "unauthorized", "Authenticate first."))
+  }
   if (is.null(method) || !is.character(method) || length(method) != 1L) {
     return(make_error(
       req_id,
@@ -202,10 +231,16 @@ dispatch_request <- function(conn, frame, server) {
     ))
   }
 
-  # Requirement gates
-  if ("authed" %in% entry$requires && !isTRUE(conn[["authed"]])) {
-    return(make_error(req_id, "unauthorized", "Authenticate first."))
+  params <- header[["params"]]
+  if (!is.null(params) && !is.list(params)) {
+    return(make_error(
+      req_id,
+      "invalid_params",
+      "`params` must be a JSON object."
+    ))
   }
+
+  # Session requirements. Authentication is checked above, for every method.
   if ("attached" %in% entry$requires && is.null(conn[["session_id"]])) {
     return(make_error(
       req_id,
@@ -242,7 +277,7 @@ dispatch_request <- function(conn, frame, server) {
       make_error(req_id, "invalid_params", conditionMessage(e))
     },
     # The only arm carrying structured data. A refused run has findings to
-    # report -- each with a code, plain-language text, evidence and where one
+    # report -- each with a code, plain-language text, evidence, and where one
     # exists a patch that fixes it -- and a caller made to parse them back out
     # of a sentence cannot act on them.
     rtemislive_invalid_config = function(e) {
@@ -275,8 +310,9 @@ dispatch_request <- function(conn, frame, server) {
 #'
 #' Validates the supplied token against the server's expected token using
 #' the constant-time `check_token()`. On success, sets `conn$authed`.
-#' Three failed attempts mark the connection for closure
-#' (`conn$close_after_response`).
+#' The last allowed failed attempt marks the connection for closure
+#' (`conn$close_after_response`), which `handle_message()` carries out after
+#' sending the response.
 #'
 #' @param conn,frame,server Standard handler triple.
 #'
@@ -289,17 +325,19 @@ handle_auth <- function(conn, frame, server) {
   req_id <- frame[["header"]][["id"]] %||% NA_character_
   params <- frame[["header"]][["params"]] %||% list()
   presented <- params[["token"]]
-  if (!check_token(presented %||% "", server[["token"]] %||% "")) {
+  if (!check_token(presented, server[["token"]])) {
     conn[["auth_attempts"]] <- conn[["auth_attempts"]] + 1L
     rtemis.core::warn(
       "Auth failed for ",
       conn[["id"]],
       " (attempt ",
       conn[["auth_attempts"]],
-      "/3).",
+      "/",
+      .RTEMISLIVE_AUTH_ATTEMPTS,
+      ").",
       package = "rtemis.server"
     )
-    if (conn[["auth_attempts"]] >= 3L) {
+    if (conn[["auth_attempts"]] >= .RTEMISLIVE_AUTH_ATTEMPTS) {
       conn[["close_after_response"]] <- TRUE
     }
     return(make_error(req_id, "unauthorized", "Invalid token."))
@@ -368,27 +406,19 @@ handle_info <- function(conn, frame, server) {
 }
 
 
-#' Return the current mirai daemon count, or 0 if mirai isn't loaded
+#' Number of daemons connected to the server's compute profile
+#'
+#' @return Integer scalar.
 #'
 #' @author EDG
 #' @keywords internal
 #' @noRd
 daemon_count <- function() {
-  if (!requireNamespace("mirai", quietly = TRUE)) {
-    return(0L)
-  }
-  status <- tryCatch(mirai::status(), error = function(e) NULL)
-  if (is.null(status)) {
-    return(0L)
-  }
-  d <- status[["daemons"]]
-  if (is.null(d)) {
-    return(0L)
-  }
-  if (is.matrix(d) || is.data.frame(d)) {
-    return(nrow(d))
-  }
-  length(d)
+  status <- tryCatch(
+    mirai::status(.compute = .RTEMISLIVE_COMPUTE),
+    error = function(e) NULL
+  )
+  as.integer(status[["connections"]] %||% 0L)
 }
 
 
@@ -421,7 +451,7 @@ daemon_count <- function() {
 
 #' `algorithms` handler
 #'
-#' Returns the catalogue of supervised learning algorithms. Each entry:
+#' Returns the catalog of supervised learning algorithms. Each entry:
 #' `{ name, description, supports_classification, supports_regression,
 #' supports_survival }`. Each algorithm's hyperparameters are declared by its
 #' published schema.
@@ -452,7 +482,7 @@ handle_algorithms <- function(conn, frame, server) {
 
 #' `decomp.algorithms` handler
 #'
-#' Returns the catalogue of decomposition algorithms. Each entry:
+#' Returns the catalog of decomposition algorithms. Each entry:
 #' `{ name, description, applicable }`, where `applicable` is `TRUE` when the
 #' algorithm's fitted transform can be applied to new data (the requirement for
 #' use as a `train()` `decomposition_config`). Each algorithm's settings are
@@ -482,7 +512,7 @@ handle_decomp_algorithms <- function(conn, frame, server) {
 
 #' `cluster.algorithms` handler
 #'
-#' Returns the catalogue of clustering algorithms. Each entry:
+#' Returns the catalog of clustering algorithms. Each entry:
 #' `{ name, description }`. Each algorithm's settings are declared by its
 #' published schema. Parallel to `handle_decomp_algorithms()`.
 #'
@@ -697,7 +727,8 @@ handle_session_rename <- function(conn, frame, server) {
 
 #' `session.delete` handler
 #'
-#' Deletes the connection's currently attached session and detaches.
+#' Deletes the connection's session: stops its unfinished jobs and detaches
+#' every connection attached to it.
 #'
 #' @author EDG
 #' @keywords internal
@@ -712,6 +743,13 @@ handle_session_delete <- function(conn, frame, server) {
     )
   }
   sid <- s[["id"]]
+  stop_session_jobs(s)
+  for (cid in s[["connections"]]) {
+    peer <- server[["connections"]][[cid]]
+    if (!is.null(peer)) {
+      peer[["session_id"]] <- NULL
+    }
+  }
   delete_session(sid)
   conn[["session_id"]] <- NULL
   make_response(req_id, list(deleted = TRUE, session_id = sid))
@@ -1060,7 +1098,7 @@ handle_train <- function(conn, frame, server) {
 #'
 #' `decomp` and `cluster` are the same job: resolve the algorithm, optionally
 #' subset the dataset to a feature list, build the algorithm's config from the
-#' wire params, and submit. Only the algorithm catalogue and the rtemis entry
+#' wire params, and submit. Only the algorithm catalog and the rtemis entry
 #' point differ, so both live here and `handle_decomp()` / `handle_cluster()`
 #' are one line each.
 #'
@@ -1095,7 +1133,7 @@ handle_unsupervised <- function(conn, frame, server, kind) {
     )
   }
 
-  # Normalizes casing and rejects anything not in the catalogue.
+  # Normalizes casing and rejects anything not in the catalog.
   alg_name <- tryCatch(
     spec[["get_name"]](algorithm),
     error = function(e) {
@@ -1111,7 +1149,7 @@ handle_unsupervised <- function(conn, frame, server, kind) {
 
   # The wire sends the form's flat name -> value map as `hyperparameters`; a
   # canonical config carries the same map as siblings of `algorithm`, which
-  # the catalogue lookup above has already consumed. `.drop_meta_keys()`
+  # the catalog lookup above has already consumed. `.drop_meta_keys()`
   # strips `$`-prefixed document metadata (`$schema`) that a config lifted from
   # a schema.rtemis.org file carries; any other unknown key still errors.
   hp <- params[["hyperparameters"]] %||% list()
@@ -1133,7 +1171,7 @@ handle_unsupervised <- function(conn, frame, server, kind) {
   )
 
   # No `progress` callback: neither entry point has fold-boundary checkpoints.
-  # The daemon-side msg sink (set up by `init_daemon_progress`) still ships
+  # The daemon-side msg sink (set up by `.ensure_daemon_sink()`) still ships
   # every internal `msg()` call (data summary, "Decomposing with PCA...",
   # outro) as a progress envelope, so the browser gets inline status without
   # any per-handler wiring.
@@ -1162,7 +1200,9 @@ handle_unsupervised <- function(conn, frame, server, kind) {
 unsupervised_kinds <- list(
   decomp = list(
     label = "decomposition",
-    get_name = rtemis::.get_decom_name,
+    # A wrapper resolves the function in the installed rtemis. A bare reference
+    # here would store the function found when this package was built.
+    get_name = function(algorithm) rtemis::.get_decom_name(algorithm),
     # The canonical wire reader, not `setup_<Algo>()` directly: it rebuilds an
     # object-valued setting from the class declaration, so a config whose
     # settings nest (a criterion, an approximation) reads the same here as
@@ -1179,7 +1219,7 @@ unsupervised_kinds <- list(
   ),
   cluster = list(
     label = "clustering",
-    get_name = rtemis::.get_clust_name,
+    get_name = function(algorithm) rtemis::.get_clust_name(algorithm),
     read = function(alg_name, settings) {
       rtemis::.list_to_ClusteringConfig(c(list(algorithm = alg_name), settings))
     },
@@ -1330,7 +1370,7 @@ handle_job_cancel <- function(conn, frame, server) {
 #'   field with the origin it came from, the values each fold resolved, the
 #'   tuning grid, and provenance (versions, platform, timing, data
 #'   fingerprints). Where `summary` says what the result *is*, this says what
-#'   the run *did*. Returned bare so the client can copy, download and validate
+#'   the run *did*. Returned bare so the client can copy, download, and validate
 #'   the document as-is; when there is no record to give, a small
 #'   `{available: false, reason}` pointer instead (`reason` is `unsupported`,
 #'   `no_input_config`, or `too_large`).
@@ -1925,7 +1965,7 @@ choose_directory <- function(prompt = "Select a folder") {
       if (identical(os, "Darwin")) {
         script <- sprintf(
           'POSIX path of (choose folder with prompt "%s")',
-          gsub('"', "", prompt, fixed = TRUE)
+          gsub('[\\\\"[:cntrl:]]', "", prompt)
         )
         system2(
           "osascript",
@@ -1938,7 +1978,12 @@ choose_directory <- function(prompt = "Select a folder") {
       } else {
         system2(
           "zenity",
-          c("--file-selection", "--directory", paste0("--title=", prompt)),
+          # `system2()` passes its arguments through a shell unquoted.
+          c(
+            "--file-selection",
+            "--directory",
+            shQuote(paste0("--title=", prompt))
+          ),
           stdout = TRUE,
           stderr = FALSE
         )
@@ -1970,6 +2015,7 @@ handle_choose_dir <- function(conn, frame, server) {
   req_id <- frame[["header"]][["id"]] %||% NA_character_
   params <- frame[["header"]][["params"]] %||% list()
   prompt <- params[["prompt"]] %||% "Select a folder"
+  check_wire_string(prompt, "prompt")
   path <- choose_directory(prompt)
   if (is.null(path)) {
     return(make_response(req_id, list(cancelled = TRUE)))
@@ -1981,8 +2027,9 @@ handle_choose_dir <- function(conn, frame, server) {
 # %% Method table ------------------------------------------------------------
 
 # Entries: list(handler = fn, requires = character[])
-# Requirements: "authed" (auth must have succeeded), "attached" (a
-# session is currently attached), "unattached" (no session attached).
+# Requirements: "authed" (auth must have succeeded, as for every method except
+# `auth`), "attached" (a session is currently attached), "unattached" (no session
+# attached).
 .METHOD_TABLE <- list(
   "auth" = list(
     handler = handle_auth,

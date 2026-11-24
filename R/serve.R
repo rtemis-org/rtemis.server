@@ -1,27 +1,22 @@
+# serve.R
+# ::rtemis.server::
 # 2026- EDG rtemis.org
 
 # Public entry point for the rtemislive backend.
 #
 # Stack:
 #
-# - `nanonext::http_server()` + `nanonext::handler_ws()` for the
-#   browser-compatible WebSocket layer. `handler_ws` accepts unlimited
-#   concurrent clients, exposes per-connection callbacks (open / message
-#   / close), and delivers raw binary frames straight to the browser
-#   `WebSocket` API.
-# - `mirai::daemons()` for the async compute pool. Daemons are
-#   pre-warmed with rtemis loaded and a `msg_sink` that forwards
-#   `msg()` calls back to the host via the progress channel.
-# - `later::later()` for periodic non-WS work - job-resolution polling,
-#   progress drain, heartbeats, GC - scheduled on the same event loop
-#   `http_server$serve()` already drives.
-#
-# All component-level testing is in test_rtemislive_*.R. A smoke
-# integration test (separate R process for the server + a client
-# connecting via `nanonext::stream`) lives in
-# test_serve_integration.R.
+# - `nanonext::http_server()` + `nanonext::handler_ws()` for the WebSocket
+#   layer. `handler_ws` delivers each complete binary WebSocket message to the
+#   per-connection callbacks (open / message / close).
+# - `mirai::daemons()` for the compute pool, on the compute profile
+#   `.RTEMISLIVE_COMPUTE`. Daemons on the caller's other profiles are outside
+#   the server's control.
+# - `later::later()` for periodic non-WebSocket work: job-resolution polling,
+#   progress drain, heartbeats, GC. `run_server()` drives the event loop, which
+#   also runs the WebSocket callbacks.
 
-# %% serve --------------------------------------------------------
+# %% serve ----
 
 #' Start the rtemislive backend
 #'
@@ -30,59 +25,58 @@
 #' async training, real-time progress, structured result transfer, and
 #' session-aware state across reconnects.
 #'
-#' Blocks until the user interrupts (Ctrl-C) or another mechanism sets
-#' `server$stop_requested`. See `specs/rtemislive.md` for the wire
-#' protocol and architectural details.
+#' Blocks until interrupted (Ctrl-C, or SIGINT to the R process), then returns.
+#' Stopping the server closes every connection, stops every job, and discards
+#' the sessions with their data and results.
 #'
-#' @param port Integer: TCP port to listen on. Must be in `1024:49151`.
-#'   Defaults to `5757`, or the value of `RTEMISLIVE_PORT` if set.
-#' @param host Character: Bind address. Defaults to `"127.0.0.1"`.
-#'   Server refuses to start on any other address.
-#' @param n_daemons Integer: Number of mirai worker processes. Default
-#'   `1L`: rtemis training jobs already parallelize internally (OpenMP
-#'   for gradient boosters, parallel tuning, parallel outer resampling),
-#'   so a single daemon runs one job at a time with full core access.
-#'   Increase only when you want multiple simultaneous jobs and accept
-#'   that each gets a fraction of the cores.
-#' @param origins Optional character vector: Allowed `Origin` headers
-#'   on the WS upgrade. `NULL` uses the spec defaults
-#'   (`live.rtemis.org`, `localhost:3000`, etc.).
-#' @param token Optional character scalar: Auth token clients must
-#'   present. `NULL` generates a fresh 8-byte random token.
-#' @param heartbeat_interval Numeric, seconds: Per-session `heartbeat`
-#'   tick rate. `0` (the default) disables heartbeat emission; pass a
-#'   positive value to re-enable it. The heartbeat carries only live
-#'   daemon/job counts, which clients fetch on demand via `info`.
-#' @param session_ttl Numeric, seconds: Idle-session GC TTL.
-#' @param data_ttl Numeric, seconds: Idle-data-handle GC TTL.
-#' @param gc_interval Numeric, seconds: How often GC runs.
-#' @param tick_ms Integer milliseconds: Background tick rate for the
-#'   non-WS periodic work scheduled via `later`. Default `50`.
-#' @param max_concurrent Integer: Cap on concurrent jobs across all
-#'   sessions. Defaults to `n_daemons`: no point queuing more running
-#'   jobs than there are workers.
-#' @param max_sessions Integer: Cap on the number of sessions.
-#' @param verbosity Integer: `>= 1L` prints the startup banner.
+#' The server runs its worker processes on a mirai compute profile of its own,
+#' so daemons set by the caller keep running. One server runs per R process.
 #'
-#' @return Server env, invisibly. Returned after the loop exits so
-#'   callers (notably tests running the server on a mirai task) can
-#'   inspect state.
+#' A connection must come from an allowed origin and present the token within
+#' 10 seconds. The third failed attempt closes it.
+#'
+#' @param port Optional Integer \[1024, 49151\]: TCP port to listen on. If
+#'   `NULL`, defaults to the environment variable `RTEMISLIVE_PORT`, or to the
+#'   standard rtemislive port if that is unset.
+#' @param host Character \{"127.0.0.1", "localhost"\}: Loopback address to bind.
+#' @param n_daemons Integer \[1, Inf): Number of worker processes. rtemis
+#'   training jobs parallelize internally, so one worker runs one job at a time
+#'   with access to every core. With more workers, simultaneous jobs share the
+#'   cores.
+#' @param origins Optional Character: Allowed `Origin` headers of the WebSocket
+#'   upgrade request. If `NULL`, defaults to `https://live.rtemis.org`,
+#'   `http://localhost:3000`, and `http://127.0.0.1:3000`.
+#' @param token Optional Character: Token that clients must present, at least 16
+#'   printable ASCII characters without spaces. If `NULL`, a random token is
+#'   generated and printed. Required when `verbosity` is less than 1.
+#' @param heartbeat_interval Numeric \[0, Inf): Seconds between `heartbeat`
+#'   events. `0` disables them.
+#' @param session_ttl Numeric (0, Inf): Seconds after its last activity at which
+#'   a session without a connection or an unfinished job is removed.
+#' @param data_ttl Numeric (0, Inf): Seconds after its last use at which an
+#'   uploaded dataset is removed.
+#' @param gc_interval Numeric (0, Inf): Seconds between removal passes.
+#' @param tick_ms Numeric \[1, Inf): Milliseconds between passes of background
+#'   work.
+#' @param max_concurrent Integer \[1, Inf): Maximum number of jobs that run at the
+#'   same time, across all sessions. Further jobs are queued.
+#' @param max_sessions Integer \[1, Inf): Maximum number of sessions.
+#' @param verbosity Integer \[0, Inf): Verbosity level. `0L` prints nothing.
+#'
+#' @return `NULL`, invisibly, after the server stops.
 #'
 #' @author EDG
 #' @export
 #'
-#' @seealso [shutdown()]
-#'
 #' @examples
 #' \dontrun{
-#' # Run on the default port; Ctrl-C to stop.
+#' # Blocks the session and listens on a local port. Ctrl-C stops the server.
 #' serve()
 #'
-#' # Multiple workers for a multi-user setup (each job gets fewer cores).
+#' # Two workers and a supplied token.
 #' serve(
-#'   port = 5757L,
-#'   n_daemons = 4L,
-#'   origins = c("http://localhost:3000"),
+#'   n_daemons = 2L,
+#'   origins = "http://localhost:3000",
 #'   token = "abcd-1234-ef56-7890"
 #' )
 #' }
@@ -101,76 +95,54 @@ serve <- function(
   max_sessions = 16L,
   verbosity = 1L
 ) {
-  # %% Dependency checks -----
-  rtemis.core::check_dependencies("nanonext", "mirai", "later", "jsonlite")
-
-  # %% Arg validation -----
-  if (is.null(port)) {
-    env_port <- Sys.getenv("RTEMISLIVE_PORT", unset = "")
-    port <- if (nzchar(env_port)) {
-      suppressWarnings(as.integer(env_port))
-    } else {
-      5757L
-    }
-  }
-  port <- as.integer(port)
-  if (is.na(port) || port < 1024L || port > 49151L) {
-    rtemis.core::abort(
-      "`port` must be an integer in 1024:49151 (got ",
-      port,
-      ")."
-    )
-  }
+  # Arguments
+  port <- resolve_port(port)
   if (
     !is.character(host) ||
       length(host) != 1L ||
-      !host %in% c("127.0.0.1", "localhost", "::1")
+      !host %in% c("127.0.0.1", "localhost")
   ) {
     rtemis.core::abort(
-      "`host` must be a loopback address.\n",
-      "Got '",
-      host,
-      "'; rtemislive only binds to 127.0.0.1 / localhost / ::1."
+      "`host` must be \"127.0.0.1\" or \"localhost\": the server accepts ",
+      "connections from the same machine only."
     )
   }
+  n_daemons <- check_count(n_daemons, "n_daemons")
+  max_concurrent <- check_count(max_concurrent, "max_concurrent")
+  max_sessions <- check_count(max_sessions, "max_sessions")
+  verbosity <- check_count(verbosity, "verbosity", min = 0L)
+  check_seconds(heartbeat_interval, "heartbeat_interval", allow_zero = TRUE)
+  check_seconds(session_ttl, "session_ttl")
+  check_seconds(data_ttl, "data_ttl")
+  check_seconds(gc_interval, "gc_interval")
+  tick_ms <- check_count(tick_ms, "tick_ms")
   origins <- normalize_origins(origins)
-  if (is.null(token)) {
+  token_generated <- is.null(token)
+  if (token_generated) {
+    if (verbosity < 1L) {
+      rtemis.core::abort(
+        "`token` is required when `verbosity` is 0: a generated token is ",
+        "printed, and clients need it to connect."
+      )
+    }
     token <- generate_token()
-  } else if (!is.character(token) || length(token) != 1L || !nzchar(token)) {
+  } else {
+    check_supplied_token(token)
+  }
+  if (mirai::daemons_set(.compute = .RTEMISLIVE_COMPUTE)) {
     rtemis.core::abort(
-      "`token` must be a single non-empty character string."
+      "The mirai compute profile \"",
+      .RTEMISLIVE_COMPUTE,
+      "\" is in use. One server runs per R process."
     )
   }
-  n_daemons <- as.integer(n_daemons)
-  if (is.na(n_daemons) || n_daemons < 1L) {
-    rtemis.core::abort("`n_daemons` must be a positive integer.")
-  }
 
-  # Push the requested verbosity into the option so info() / warn() / etc.
-  # called anywhere downstream gate themselves correctly without each
-  # callsite having to thread the value through.
-  options(rtemis.server.verbosity = as.integer(verbosity))
+  # `info()`, `warn()`, and `success()` read this option.
+  old_options <- options(rtemis.server.verbosity = verbosity)
+  on.exit(options(old_options), add = TRUE)
 
-  # %% Daemons + progress channel -----
-  rtemis.core::info(
-    "Starting ",
-    n_daemons,
-    " mirai daemon",
-    if (n_daemons == 1L) "" else "s",
-    "...",
-    package = "rtemis.server"
-  )
-  mirai::daemons(n_daemons)
-
-  progress_url <- default_progress_url()
-  progress_sock <- bind_progress_socket(progress_url)
-  rtemis.core::info(
-    "Initialising daemon-side progress sink...",
-    package = "rtemis.server"
-  )
-  init_daemon_progress(progress_url)
-
-  # %% Server state -----
+  # `stop_server()` runs before the option is restored, and is registered
+  # before the first resource is created.
   server <- new_server_state(
     token = token,
     origins = origins,
@@ -181,135 +153,15 @@ serve <- function(
     data_ttl = data_ttl,
     gc_interval = gc_interval
   )
-  server[["progress_sock"]] <- progress_sock
+  on.exit(stop_server(server), add = TRUE, after = FALSE)
 
-  # ws$id -> our connection env. Kept outside `server$connections` because
-  # nanonext's id namespace is independent of our `conn_id`s.
-  ws_lookup <- new.env(parent = emptyenv())
+  # The port is bound first: a busy port fails before any process starts.
+  # Connections made from here on are handled when `run_server()` starts.
+  start_listener(server, host, port)
+  start_workers(server, n_daemons)
+  schedule_tick(server, tick_ms / 1000)
 
-  # %% WebSocket handler -----
-  ws_handler <- nanonext::handler_ws(
-    path = "/",
-    textframes = FALSE,
-    on_open = function(ws, req) {
-      headers <- req[["headers"]]
-      origin <- if (is.list(headers)) headers[["Origin"]] else headers["Origin"]
-      if (!check_origin(origin, server[["origins"]])) {
-        rtemis.core::warn(
-          "Connection rejected: disallowed origin '",
-          origin %||% "<none>",
-          "'.",
-          package = "rtemis.server"
-        )
-        ws$close()
-        return(invisible(NULL))
-      }
-      ws_id <- ws[["id"]]
-      conn <- new_connection(send_raw = function(b) {
-        if (!is.raw(b)) {
-          b <- charToRaw(as.character(b))
-        }
-        ws$send(b)
-      })
-      conn[["ws_id"]] <- ws_id
-      register_connection(server, conn)
-      ws_lookup[[as.character(ws_id)]] <- conn
-      rtemis.core::info(
-        "Connection opened: ",
-        conn[["id"]],
-        " (origin '",
-        origin %||% "<none>",
-        "', ",
-        length(server[["connections"]]),
-        " active).",
-        package = "rtemis.server"
-      )
-
-      ev <- make_event(
-        "ready",
-        data = list(
-          v = 1L,
-          server = "rtemislive",
-          rtemis_version = tryCatch(
-            as.character(utils::packageVersion("rtemis")),
-            error = function(e) NA_character_
-          ),
-          # rtemis's node-kind palette, so the browser colors live progress and
-          # timeline bars from the one definition in R rather than a copy of its
-          # own that drifts. Announced here rather than fetched: it is static
-          # per server and the client needs it before the first job reports.
-          kind_colors = tryCatch(
-            as.list(rtemis::session_kind_colors()),
-            error = function(e) NULL
-          )
-        )
-      )
-      tryCatch(
-        write_frame(conn, encode_frame(ev)),
-        error = function(e) NULL
-      )
-      invisible(NULL)
-    },
-    on_message = function(ws, data) {
-      conn <- ws_lookup[[as.character(ws[["id"]])]]
-      if (is.null(conn)) {
-        return(invisible(NULL))
-      }
-      if (is.raw(data)) {
-        conn[["buffer"]] <- c(conn[["buffer"]], data)
-      }
-      tryCatch(
-        drain_buffer(conn, server),
-        error = function(e) {
-          rtemis.core::warn(
-            "drain error: ",
-            conditionMessage(e),
-            package = "rtemis.server"
-          )
-        }
-      )
-      invisible(NULL)
-    },
-    on_close = function(ws) {
-      key <- as.character(ws[["id"]])
-      conn <- ws_lookup[[key]]
-      if (!is.null(conn)) {
-        disconnect_connection(server, conn)
-        rm(list = key, envir = ws_lookup)
-      }
-      invisible(NULL)
-    }
-  )
-
-  http <- nanonext::http_server(
-    url = paste0("http://", host, ":", port),
-    handlers = list(ws_handler)
-  )
-
-  # %% Periodic background work -----
-  # Scheduled on `later`'s event loop, which is the same loop
-  # `http_server$serve()` drives.
-  tick_seconds <- as.numeric(tick_ms) / 1000
-  schedule_tick <- function() {
-    if (isTRUE(server[["stop_requested"]])) {
-      tryCatch(http$close(), error = function(e) NULL)
-      return(invisible(NULL))
-    }
-    tryCatch(
-      host_tick(server),
-      error = function(e) {
-        rtemis.core::warn(
-          "tick error: ",
-          conditionMessage(e),
-          package = "rtemis.server"
-        )
-      }
-    )
-    later::later(schedule_tick, delay = tick_seconds)
-  }
-  later::later(schedule_tick, delay = 0.01)
-
-  # %% Banner -----
+  server[["running"]] <- TRUE
   rtemis.core::success(
     "rtemislive listening on ws://",
     host,
@@ -319,65 +171,458 @@ serve <- function(
   )
   rtemis.core::info(
     "Allowed origins: ",
-    paste(server[["origins"]], collapse = ", "),
+    paste(origins, collapse = ", "),
     package = "rtemis.server"
   )
-  rtemis.core::info(
-    "Connection token: ",
-    token,
-    package = "rtemis.server"
-  )
+  if (token_generated) {
+    rtemis.core::info(
+      "Connection token: ",
+      token,
+      package = "rtemis.server"
+    )
+  }
+  rtemis.core::info("Press Ctrl-C to stop.", package = "rtemis.server")
 
-  # %% Run the loop -----
-  on.exit(
-    {
-      tryCatch(http$close(), error = function(e) NULL)
-      close_progress_socket(progress_sock)
-      tryCatch(mirai::daemons(0L), error = function(e) NULL)
-    },
-    add = TRUE
-  )
-  http$serve()
-  invisible(server)
+  run_server(server)
+  invisible(NULL)
 }
 
 
-# %% shutdown ---------------------------------------------------------
+# %% resolve_port ----
+#' Resolve the port to listen on
+#'
+#' @param port Optional Integer: Value of the `port` argument of `serve()`.
+#'
+#' @return Integer scalar.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+resolve_port <- function(port) {
+  name <- "`port`"
+  if (is.null(port)) {
+    env_port <- Sys.getenv("RTEMISLIVE_PORT", unset = "")
+    if (!nzchar(env_port)) {
+      return(5757L)
+    }
+    name <- "Environment variable `RTEMISLIVE_PORT`"
+    port <- suppressWarnings(as.numeric(env_port))
+  }
+  if (
+    !is.numeric(port) ||
+      length(port) != 1L ||
+      !is.finite(port) ||
+      port != round(port) ||
+      port < 1024 ||
+      port > 49151
+  ) {
+    rtemis.core::abort(name, " must be a whole number from 1024 to 49151.")
+  }
+  as.integer(port)
+}
 
-#' Signal a running rtemislive server to stop
+
+# %% check_count ----
+#' Check that an argument is a whole number
 #'
-#' Sets `server$stop_requested`. On its next tick the loop will close
-#' the HTTP listener (which causes `http_server$serve()` to return) and
-#' `serve()` cleans up daemons and sockets via `on.exit`.
+#' @param x Value of the argument.
+#' @param name Character: Argument name, for the message.
+#' @param min Integer: Smallest allowed value.
 #'
-#' Useful when the server runs on a mirai task or a separate R process
-#' that can be passed the server env (e.g. in integration tests). For a
-#' server running in the user's foreground R session, just press
-#' Ctrl-C.
+#' @return Integer scalar.
 #'
-#' @param server Server env returned (or shared) from [serve()].
+#' @author EDG
+#' @keywords internal
+#' @noRd
+check_count <- function(x, name, min = 1L) {
+  if (
+    !is.numeric(x) ||
+      length(x) != 1L ||
+      !is.finite(x) ||
+      x != round(x) ||
+      x < min ||
+      x > .Machine[["integer.max"]]
+  ) {
+    rtemis.core::abort(
+      "`",
+      name,
+      "` must be a whole number of at least ",
+      min,
+      "."
+    )
+  }
+  as.integer(x)
+}
+
+
+# %% check_seconds ----
+#' Check that an argument is a duration in seconds
+#'
+#' @param x Value of the argument.
+#' @param name Character: Argument name, for the message.
+#' @param allow_zero Logical: If `TRUE`, zero is allowed.
+#'
+#' @return `x`, invisibly.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+check_seconds <- function(x, name, allow_zero = FALSE) {
+  if (
+    !is.numeric(x) ||
+      length(x) != 1L ||
+      is.na(x) ||
+      x < 0 ||
+      (!allow_zero && x == 0)
+  ) {
+    rtemis.core::abort(
+      "`",
+      name,
+      "` must be a single ",
+      if (allow_zero) "non-negative" else "positive",
+      " number of seconds."
+    )
+  }
+  invisible(x)
+}
+
+
+# %% start_listener ----
+#' Bind the WebSocket listener
+#'
+#' Stores the HTTP server as `server$http`.
+#'
+#' @param server Server env.
+#' @param host Character: Loopback address.
+#' @param port Integer: TCP port.
 #'
 #' @return `NULL`, invisibly.
 #'
 #' @author EDG
-#' @export
-#'
-#' @examples
-#' \dontrun{
-#' # Start the server on a mirai task so it doesn't block the session.
-#' task <- mirai::mirai({
-#'   rtemis.server::serve(port = 5757L, verbosity = 0L)
-#' })
-#'
-#' # ... do work ...
-#'
-#' # Signal the server to stop gracefully.
-#' rtemis.server::shutdown(task$data)
-#' }
-shutdown <- function(server) {
-  if (!is.environment(server)) {
-    rtemis.core::abort("`server` must be the env returned by `serve()`.")
+#' @keywords internal
+#' @noRd
+start_listener <- function(server, host, port) {
+  e <- tryCatch(
+    {
+      server[["http"]] <- nanonext::http_server(
+        url = paste0("http://", host, ":", port),
+        handlers = list(ws_handler(server))
+      )
+      server[["http"]]$start()
+      NULL
+    },
+    error = identity
+  )
+  if (!is.null(e)) {
+    rtemis.core::abort(
+      "Could not listen on ",
+      host,
+      ":",
+      port,
+      " (",
+      sub("^[0-9]+ \\| ", "", conditionMessage(e)),
+      ").\nStop the process that uses the port, or choose another `port`.",
+      parent = e
+    )
   }
-  server[["stop_requested"]] <- TRUE
+  invisible(NULL)
+}
+
+
+# %% start_workers ----
+#' Start the worker processes and the progress channel
+#'
+#' @param server Server env.
+#' @param n_daemons Integer: Number of worker processes.
+#'
+#' @return `NULL`, invisibly.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+start_workers <- function(server, n_daemons) {
+  rtemis.core::info(
+    "Starting ",
+    n_daemons,
+    " mirai daemon",
+    if (n_daemons == 1L) "" else "s",
+    "...",
+    package = "rtemis.server"
+  )
+  url <- default_progress_url()
+  server[["progress_sock"]] <- bind_progress_socket(url)
+  live[["rtemislive_progress_url"]] <- url
+  server[["n_daemons"]] <- n_daemons
+  server[["workers_started"]] <- TRUE
+  mirai::daemons(n_daemons, .compute = .RTEMISLIVE_COMPUTE)
+  server[["last_launch"]] <- Sys.time()
+  invisible(NULL)
+}
+
+
+# %% schedule_tick ----
+#' Schedule the recurring background work
+#'
+#' Stores the function that cancels the pending tick as `server$cancel_tick`.
+#'
+#' @param server Server env.
+#' @param seconds Numeric: Delay between ticks.
+#'
+#' @return `NULL`, invisibly.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+schedule_tick <- function(server, seconds) {
+  tick <- function() {
+    guard_callback(server, "tick", host_tick(server))
+    if (!isTRUE(server[["stop_requested"]])) {
+      server[["cancel_tick"]] <- later::later(tick, delay = seconds)
+    }
+  }
+  server[["cancel_tick"]] <- later::later(tick, delay = seconds)
+  invisible(NULL)
+}
+
+
+# %% guard_callback ----
+#' Evaluate the body of an event-loop callback
+#'
+#' An error becomes a warning, so one failing callback leaves the server
+#' running. An interrupt requests a stop: the loop's own handler is out of
+#' reach when a callback runs in a C-level context.
+#'
+#' @param server Server env.
+#' @param what Character: Callback name, for the warning.
+#' @param expr Expression to evaluate.
+#'
+#' @return `NULL`, invisibly.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+guard_callback <- function(server, what, expr) {
+  tryCatch(
+    expr,
+    error = function(e) {
+      rtemis.core::warn(
+        what,
+        " error: ",
+        conditionMessage(e),
+        package = "rtemis.server"
+      )
+    },
+    interrupt = function(e) {
+      server[["stop_requested"]] <- TRUE
+    }
+  )
+  invisible(NULL)
+}
+
+
+# %% ws_handler ----
+#' Build the WebSocket handler of a server
+#'
+#' @param server Server env.
+#'
+#' @return Handler object from `nanonext::handler_ws()`.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+ws_handler <- function(server) {
+  # ws$id -> connection env. The id namespace of nanonext is independent of
+  # `conn$id`, which keys `server$connections`.
+  ws_lookup <- new.env(parent = emptyenv())
+
+  nanonext::handler_ws(
+    path = "/",
+    textframes = FALSE,
+    on_open = function(ws, req) {
+      guard_callback(server, "open", {
+        conn <- open_connection(server, ws, req)
+        if (!is.null(conn)) {
+          ws_lookup[[as.character(ws[["id"]])]] <- conn
+        }
+      })
+    },
+    on_message = function(ws, data) {
+      guard_callback(server, "message", {
+        conn <- ws_lookup[[as.character(ws[["id"]])]]
+        if (!is.null(conn)) {
+          handle_message(conn, data, server)
+        }
+      })
+    },
+    on_close = function(ws) {
+      guard_callback(server, "close", {
+        key <- as.character(ws[["id"]])
+        conn <- ws_lookup[[key]]
+        if (!is.null(conn)) {
+          rm(list = key, envir = ws_lookup)
+          disconnect_connection(server, conn)
+        }
+      })
+    }
+  )
+}
+
+
+# %% open_connection ----
+#' Admit or reject a newly opened WebSocket
+#'
+#' @param server Server env.
+#' @param ws nanonext WebSocket connection.
+#' @param req List: Upgrade request with `uri` and `headers`.
+#'
+#' @return Connection env, or `NULL` when the origin is not allowed.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+open_connection <- function(server, ws, req) {
+  origin <- request_header(req[["headers"]], "Origin")
+  if (!check_origin(origin, server[["origins"]])) {
+    rtemis.core::warn(
+      "Connection rejected: disallowed origin '",
+      origin %||% "<none>",
+      "'.",
+      package = "rtemis.server"
+    )
+    ws$close()
+    return(NULL)
+  }
+  conn <- new_connection(
+    send_raw = function(bytes) ws$send(bytes),
+    close_socket = function() ws$close()
+  )
+  register_connection(server, conn)
+  rtemis.core::info(
+    "Connection opened: ",
+    conn[["id"]],
+    " (origin '",
+    origin,
+    "', ",
+    length(server[["connections"]]),
+    " active).",
+    package = "rtemis.server"
+  )
+  emit_event_to_connection(
+    server,
+    conn,
+    make_event(
+      "ready",
+      data = list(
+        v = 1L,
+        server = "rtemislive",
+        rtemis_version = tryCatch(
+          as.character(utils::packageVersion("rtemis")),
+          error = function(e) NA_character_
+        ),
+        # rtemis's node-kind palette, so the browser colors live progress and
+        # timeline bars from the one definition in R. The client needs it
+        # before the first job reports.
+        kind_colors = tryCatch(
+          as.list(rtemis::session_kind_colors()),
+          error = function(e) NULL
+        )
+      )
+    )
+  )
+  conn
+}
+
+
+# %% run_server ----
+#' Run the event loop until a stop is requested
+#'
+#' Returns when `server$stop_requested` is set or on an interrupt.
+#'
+#' @param server Server env.
+#'
+#' @return `NULL`, invisibly.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+run_server <- function(server) {
+  tryCatch(
+    while (!isTRUE(server[["stop_requested"]])) {
+      # The loop is shared with the rest of the R session, whose callbacks may
+      # raise errors.
+      tryCatch(
+        later::run_now(1),
+        error = function(e) {
+          rtemis.core::warn(
+            "event loop error: ",
+            conditionMessage(e),
+            package = "rtemis.server"
+          )
+        }
+      )
+    },
+    interrupt = function(e) {
+      server[["stop_requested"]] <- TRUE
+    }
+  )
+  invisible(NULL)
+}
+
+
+# %% stop_server ----
+#' Stop a server and release everything it holds
+#'
+#' Runs on every exit from `serve()`, including an error during startup, and
+#' releases what exists at that point. Sessions end with the server, so jobs
+#' are stopped without a grace period.
+#'
+#' @param server Server env.
+#'
+#' @return `NULL`, invisibly.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+stop_server <- function(server) {
+  # A second Ctrl-C must not leave the port bound or the daemons running.
+  suspendInterrupts({
+    server[["stop_requested"]] <- TRUE
+    if (is.function(server[["cancel_tick"]])) {
+      server[["cancel_tick"]]()
+    }
+    n_jobs <- sum(vapply(
+      as.list(session_registry()),
+      count_unfinished_jobs,
+      integer(1L)
+    ))
+    if (!is.null(server[["http"]])) {
+      tryCatch(server[["http"]]$close(), error = function(e) NULL)
+      server[["http"]] <- NULL
+    }
+    if (isTRUE(server[["workers_started"]])) {
+      tryCatch(
+        mirai::daemons(0L, .compute = .RTEMISLIVE_COMPUTE),
+        error = function(e) NULL
+      )
+    }
+    close_progress_socket(server[["progress_sock"]])
+    server[["progress_sock"]] <- NULL
+    live[["rtemislive_progress_url"]] <- NULL
+    clear_sessions()
+    # nanonext runs the close callbacks and frees the server in callbacks of
+    # the event loop. Until they run, the port stays unavailable to a new
+    # server in this R process.
+    tryCatch(later::run_now(0), error = function(e) NULL)
+  })
+  if (isTRUE(server[["running"]])) {
+    server[["running"]] <- FALSE
+    rtemis.core::info(
+      "Server stopped.",
+      if (n_jobs > 0L) {
+        paste0(" Unfinished jobs stopped: ", n_jobs, ".")
+      },
+      package = "rtemis.server"
+    )
+  }
   invisible(NULL)
 }

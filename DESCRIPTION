@@ -1,20 +1,21 @@
 Package: rtemis.server
-Version: 0.2.3
+Version: 0.2.4
 Title: 'rtemis' Server
-Date: 2026-11-03
+Date: 2026-11-23
 Authors@R: person(given = "E.D.", family = "Gennatas", role = c("aut", "cre", "cph"), 
     email = "gennatas@gmail.com", comment = c(ORCID = "0000-0001-9280-3609"))
 Description: Create a websocket server to run 'rtemis' functions from an 'rtemislive' client.
 License: BSD_3_clause + file LICENSE
 Encoding: UTF-8
 Language: en-US
-URL: https://www.rtemis.org, https://live.rtemis.org
+URL: https://www.rtemis.org, https://live.rtemis.org,
+    https://docs.rtemis.org/r/server/
 BugReports: https://github.com/rtemis-org/rtemis.server/issues
 ByteCompile: yes
 Depends:
-    R (>= 4.1.0)
+    R (>= 4.4.0)
 Imports:
-    methods,
+    stats,
     utils,
     S7,
     arrow,

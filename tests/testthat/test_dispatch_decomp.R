@@ -16,7 +16,7 @@ library(data.table)
 
 # File-level: ensure a daemon pool is available for the job-flow tests.
 if (!isTRUE(getOption("rtemislive.test_daemons_started"))) {
-  mirai::daemons(2L)
+  mirai::daemons(2L, .compute = .RTEMISLIVE_COMPUTE)
   options(rtemislive.test_daemons_started = TRUE)
 }
 

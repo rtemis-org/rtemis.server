@@ -12,7 +12,7 @@ skip_if_not_installed("rtemis")
 # test (re-`install` after source changes if the daemons need to see
 # them).
 if (!isTRUE(getOption("rtemislive.test_daemons_started"))) {
-  mirai::daemons(2L)
+  mirai::daemons(2L, .compute = .RTEMISLIVE_COMPUTE)
   options(rtemislive.test_daemons_started = TRUE)
 }
 

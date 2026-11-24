@@ -283,3 +283,30 @@ test_that("cancel_upload() drops state and returns logical", {
   expect_false(cancel_upload(s, uid))
   expect_false(cancel_upload(s, "upload-bogus"))
 })
+
+
+# Upload bounds ----
+test_that("begin_upload() accepts sizes beyond the integer range", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  s <- new_session("big")
+  id <- begin_upload(s, "x", total_bytes = 3e9, n_chunks = 2)
+  out <- chunk_upload(s, id, 1, as.raw(1:10))
+  expect_identical(out[["total_bytes"]], 3e9)
+  expect_identical(out[["received_bytes"]], 10)
+})
+
+test_that("uploads reject counts and sizes that do not add up", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  s <- new_session("bad")
+  invalid <- "rtemislive_invalid_params"
+  expect_error(begin_upload(s, "x", 10.5, 1), class = invalid)
+  expect_error(begin_upload(s, "x", 10, Inf), class = invalid)
+  expect_error(begin_upload(s, "x", 10, 11), class = invalid)
+  id <- begin_upload(s, "x", 10, 2)
+  expect_error(chunk_upload(s, id, 1, as.raw(1:11)), class = invalid)
+  expect_error(chunk_upload(s, id, 1, raw(0)), class = invalid)
+  expect_error(chunk_upload(s, list(1), 1, as.raw(1)), class = invalid)
+  expect_error(get_data(s, 1), class = invalid)
+})

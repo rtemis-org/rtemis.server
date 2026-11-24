@@ -1,6 +1,24 @@
 This file starts here: entries below cover changes from this point forward
 rather than reconstructing the package's earlier history.
 
+# rtemis.server 0.2.4
+
+- The third failed `auth` attempt closes the connection, as does any other request before authentication, and a connection must authenticate within 10 seconds.
+- A request id has at most 128 bytes.
+- `serve()` requires a supplied `token` to have at least 16 printable ASCII characters without spaces, prints the token only when it generates it, and requires `token` when `verbosity` is 0.
+- The origin check reads the `Origin` header whatever the case of its name.
+- Ctrl-C makes `serve()` return, with exit status 0 under Rscript. A stop releases the port, the background work, the sessions, and `options(rtemis.server.verbosity)`, so a new server can start in the same R process.
+- `serve()` runs its workers on the mirai compute profile "rtemis.server" and leaves the caller's daemons running.
+- A worker that ends unexpectedly is replaced, and its job fails with a message.
+- `serve()` announces the server after its port is bound, and an unavailable port is an error that names it. `verbosity = 0L` prints nothing.
+- `host` takes "127.0.0.1" or "localhost".
+- `shutdown()` is removed.
+- Numbers are sent with 15 significant digits.
+- `info` reports the number of connected workers.
+- A response that exceeds the frame limits is answered with an error, and an event whose last connection fails is kept for the next `session.join`.
+- `session.delete` cancels the session's unfinished jobs and detaches its other connections.
+- Requires R 4.4.0.
+
 # rtemis.server 0.2.3
 
 - `job.result` serves a `pr` slice: the precision-recall curves of `rtemis::pr_table()`, aggregate and, for a resampled fit, per resample, with columns `split`, `class`, `fold`, `recall`, `precision`, `ap`, and `prevalence`; requires rtemis 1.4.4.

@@ -1,9 +1,23 @@
+# auth.R
+# ::rtemis.server::
 # 2026- EDG rtemis.org
 
 # Authentication and origin checking for the rtemislive WebSocket server.
-# See specs/rtemislive.md paragraph 11 for the security contract.
+# spec: rtemis.server/lifecycle#authentication
 
-# Default origins (spec paragraph 11.2).
+# Failed `auth` attempts that close a connection.
+.RTEMISLIVE_AUTH_ATTEMPTS <- 3L
+
+# Largest number of bytes of a request id, which every response repeats.
+.RTEMISLIVE_ID_MAX <- 128L
+
+# Seconds a connection may stay unauthenticated.
+.RTEMISLIVE_AUTH_TIMEOUT <- 10
+
+# Smallest number of characters of a supplied token.
+.RTEMISLIVE_TOKEN_MIN <- 16L
+
+# Default origins.
 .RTEMISLIVE_DEFAULT_ORIGINS <- c(
   "https://live.rtemis.org",
   "http://localhost:3000",
@@ -40,6 +54,9 @@ generate_token <- function() {
 #' Compares two character scalars in constant time to mitigate timing
 #' side-channel attacks during `auth` validation.
 #'
+#' An `NA` or empty string on either side is a mismatch. `charToRaw()` reads
+#' `NA_character_` as the bytes of "NA".
+#'
 #' @param presented Character scalar: Token submitted by the client.
 #' @param expected Character scalar: The server's current token.
 #'
@@ -49,11 +66,10 @@ generate_token <- function() {
 #' @keywords internal
 #' @noRd
 check_token <- function(presented, expected) {
-  if (!is.character(presented) || length(presented) != 1L) {
-    return(FALSE)
-  }
-  if (!is.character(expected) || length(expected) != 1L) {
-    return(FALSE)
+  for (x in list(presented, expected)) {
+    if (!is.character(x) || length(x) != 1L || is.na(x) || !nzchar(x)) {
+      return(FALSE)
+    }
   }
   a <- charToRaw(presented)
   b <- charToRaw(expected)
@@ -71,6 +87,58 @@ check_token <- function(presented, expected) {
   }
   diff <- as.integer(xor(a, b))
   identical(na, nb) && sum(diff) == 0L
+}
+
+
+# %% check_supplied_token ----
+#' Check a token supplied by the caller of `serve()`
+#'
+#' @param token Character: Token.
+#'
+#' @return `token`, invisibly.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+check_supplied_token <- function(token) {
+  # `\z` is the end of the string; `$` also matches before a final newline.
+  if (
+    !is.character(token) ||
+      length(token) != 1L ||
+      is.na(token) ||
+      !grepl("^[!-~]+\\z", token, perl = TRUE, useBytes = TRUE) ||
+      nchar(token, type = "bytes") < .RTEMISLIVE_TOKEN_MIN
+  ) {
+    rtemis.core::abort(
+      "`token` must be a single string of at least ",
+      .RTEMISLIVE_TOKEN_MIN,
+      " printable ASCII characters without spaces."
+    )
+  }
+  invisible(token)
+}
+
+
+# %% request_header ----
+#' Read a header of the WebSocket upgrade request
+#'
+#' Header names are case-insensitive (RFC 9110), and nanonext keeps the case
+#' the client sent.
+#'
+#' @param headers Named character vector: Request headers.
+#' @param name Character: Header name.
+#'
+#' @return Character scalar, or `NULL` if the header is absent.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+request_header <- function(headers, name) {
+  i <- match(tolower(name), tolower(names(headers)))
+  if (is.na(i)) {
+    return(NULL)
+  }
+  headers[[i]]
 }
 
 

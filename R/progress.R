@@ -1,6 +1,9 @@
+# progress.R
+# ::rtemis.server::
 # 2026- EDG rtemis.org
 
-# Progress channel for rtemislive. See specs/rtemislive.md paragraph 9.
+# Progress channel for rtemislive.
+# spec: rtemislive.md 9
 #
 # Daemon side: each mirai daemon holds a `push` NNG socket dialing the
 # host. A `msg()` sink installed on the daemon reads the current job_id
@@ -302,72 +305,23 @@ route_progress <- function(messages, send_event = NULL) {
 
 # %% Daemon-side setup -----------------------------------------------------------------------------
 
-#' Configure daemons to forward `msg()` calls to the host
-#'
-#' Runs (via `mirai::everywhere`) on every daemon in the pool. On each
-#' daemon:
-#'
-#' 1. Opens a `push` socket dialing the supplied progress URL.
-#' 2. Stores it in rtemis.server's `live` environment under
-#'    `rtemislive_progress_socket`.
-#' 3. Registers a `msg_sink` that reads the current `job_id` from `live`
-#'    and forwards each message as a JSON envelope on the socket.
-#'
-#' Subsequent `msg()` / `msg0()` / `msgstart()` / `msgdone()` calls
-#' anywhere in rtemis (or in code running on the daemon) become live
-#' progress events automatically.
-#'
-#' @param url Character. The URL the host's pull socket is listening on
-#'   (typically the value returned by `default_progress_url()`).
-#'
-#' @return Result of `mirai::everywhere()` (typically invisible NULL).
-#'
-#' @author EDG
-#' @keywords internal
-#' @noRd
-init_daemon_progress <- function(url) {
-  rtemis.core::check_dependencies("mirai")
-  if (!is.character(url) || length(url) != 1L || !nzchar(url)) {
-    rtemis.core::abort("`url` must be a single non-empty character string.")
-  }
-
-  # `mirai::everywhere()` persists changes to the daemon's `globalenv()`,
-  # loaded packages, and options. It drops writes into a package namespace
-  # environment and top-level `<-` assignments made inside its block, so a
-  # sink or socket installed here would be NULL on every daemon.
-  #
-  # `everywhere` therefore only plants the URL in the daemon's `options()`.
-  # `.ensure_daemon_sink()` installs the socket and sink at job start, inside
-  # a regular `mirai()` task, whose namespace writes persist. Later jobs on the
-  # same daemon find the sink installed and skip the setup.
-  # NB: pass an UNQUOTED expression. `mirai::everywhere()` runs
-  # `substitute()` on `.expr` internally, so handing it `quote({...})`
-  # gives it a language object that it never evaluates - the original
-  # bug that wedged this whole channel. `everywhere({...})` works.
-  mirai::everywhere(
-    {
-      options(rtemislive.progress_url = url)
-    },
-    url = url
-  )
-}
-
-
 #' Lazily install the daemon-side msg sink + push socket
 #'
-#' Runs as the first action of every wrapped job expression (see
-#' `submit_job` in jobs.R). On the first call per daemon, opens a
-#' nanonext push socket dialing the URL planted by
-#' `init_daemon_progress` and installs an `rtemis.core::set_msg_sink()`
-#' that forwards every `msg()` call as a JSON envelope on the socket.
-#' On subsequent calls (sink already installed), short-circuits.
+#' Runs as the first action of every wrapped job expression. On the first call
+#' per daemon, opens a nanonext push socket dialing `url` and installs an
+#' `rtemis.core::set_msg_sink()` that forwards every `msg()` call as a JSON
+#' envelope on the socket. Later calls find the sink installed and return.
 #'
 #' The socket is stored in the daemon's copy of rtemis.server's `live`
-#' environment, whose writes persist across regular `mirai()` tasks. See
-#' `init_daemon_progress()` for why setup happens here.
+#' environment, whose writes persist across `mirai()` tasks. Writes to a package
+#' namespace inside `mirai::everywhere()` do not persist, so the sink is
+#' installed by a task.
 #'
 #' Exported for the per-job expression built by `submit_job()`, which runs on
 #' a daemon and calls it as `rtemis.server::.ensure_daemon_sink()`.
+#'
+#' @param url Optional Character: Address of the host's progress socket. If
+#'   `NULL`, returns without opening a socket.
 #'
 #' @return `NULL`, invisibly.
 #'
@@ -375,15 +329,10 @@ init_daemon_progress <- function(url) {
 #' @keywords internal
 #' @export
 #' @examples
-#' # Without a progress URL in `options(rtemislive.progress_url)`, returns
-#' # without opening a socket.
 #' .ensure_daemon_sink()
-.ensure_daemon_sink <- function() {
-  if (!is.null(rtemis.core::get_msg_sink())) {
-    return(invisible(NULL))
-  }
-  url <- getOption("rtemislive.progress_url")
-  if (is.null(url) || !nzchar(url)) {
+.ensure_daemon_sink <- function(url = NULL) {
+  rtemis.core::check_character(url)
+  if (is.null(url) || !is.null(rtemis.core::get_msg_sink())) {
     return(invisible(NULL))
   }
   sock <- nanonext::socket("push", dial = url)
@@ -404,15 +353,9 @@ init_daemon_progress <- function(url) {
       ),
       m[setdiff(names(m), "text")]
     )
-    txt <- jsonlite::toJSON(
-      payload,
-      auto_unbox = TRUE,
-      na = "null",
-      null = "null"
-    )
     nanonext::send(
       s,
-      charToRaw(as.character(txt)),
+      charToRaw(.wire_json(payload)),
       mode = "raw",
       block = FALSE
     )

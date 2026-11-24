@@ -1,7 +1,9 @@
+# jobs.R
+# ::rtemis.server::
 # 2026- EDG rtemis.org
 
-# Job store and mirai integration for rtemislive. See specs/rtemislive.md
-# paragraph 6.4 (train), paragraph 6.6 (cancel), paragraph 10 (state machine), paragraph 9 (progress).
+# Job store and mirai integration for rtemislive.
+# spec: rtemislive.md 6.4 (train), 6.6 (cancel), 9 (progress), and 10 (state machine)
 #
 # A job lives inside a session's `jobs` sub-env, keyed by job_id. Each job
 # is itself an env with:
@@ -23,7 +25,7 @@
 # Job state transitions and the host event loop
 # ----------------------------------------------
 # The host loop calls `check_job_resolved(job)` each tick. When mirai
-# reports the task is no longer `unresolved`, `finalize_job()` is called
+# reports the task is resolved, `finalize_job()` is called
 # to read the mirai's value, set timing fields, and transition status to
 # `complete` / `failed` / `cancelled`. The dispatcher then emits a
 # `job.complete` / `job.failed` / `job.cancelled` event to attached
@@ -59,7 +61,7 @@ new_job_id <- function() {
 #' 3. Evaluates `expr`.
 #'
 #' Variables referenced from inside `expr` must be supplied via `env` - a
-#' named list - so mirai captures and serialises them to the daemon. The
+#' named list - so mirai captures and serializes them to the daemon. The
 #' job_id is injected automatically.
 #'
 #' If `count_active_jobs() < max_concurrent`, the job is launched
@@ -68,8 +70,8 @@ new_job_id <- function() {
 #' env retained on the job env, to be launched later by
 #' `promote_queued_jobs()` when slots free up.
 #'
-#' Caller is responsible for ensuring at least one mirai daemon is
-#' running (`mirai::daemons(n)`); we don't manage daemons here.
+#' Jobs run on the daemons of the compute profile `.RTEMISLIVE_COMPUTE`, which
+#' `serve()` starts.
 #'
 #' @param session Session env.
 #' @param type Character. Job type - `"train"`, etc.
@@ -103,11 +105,11 @@ submit_job <- function(
   job_id <- new_job_id()
 
   # The wrapped expression runs on a daemon. It installs the msg sink and
-  # push socket on first use (see `init_daemon_progress()`), then sets the
-  # job id for the duration of the task; the daemon-side `msg()` sink reads
-  # it to tag forwarded messages.
+  # push socket on first use, then sets the job id for the duration of the
+  # task; the daemon-side `msg()` sink reads it to tag forwarded messages. The
+  # address travels with the job, so a replacement daemon needs no setup.
   wrapped <- bquote({
-    rtemis.server::.ensure_daemon_sink()
+    rtemis.server::.ensure_daemon_sink(.(live[["rtemislive_progress_url"]]))
     prev <- rtemis.server::.set_job_id(.(job_id))
     on.exit(rtemis.server::.set_job_id(prev), add = TRUE)
     .(expr)
@@ -129,7 +131,7 @@ submit_job <- function(
   job[["pending_env"]] <- NULL
 
   if (count_active_jobs() < max_concurrent) {
-    job[["mirai"]] <- do.call(mirai::mirai, c(list(.expr = wrapped), env))
+    job[["mirai"]] <- launch_job(wrapped, env)
     job[["status"]] <- "running"
     job[["started_at"]] <- now
   } else {
@@ -154,6 +156,24 @@ submit_job <- function(
     package = "rtemis.server"
   )
   job
+}
+
+
+#' Launch a job expression on the server's daemons
+#'
+#' @param expr Language: Body of the mirai task.
+#' @param env Named list: Variables of the task.
+#'
+#' @return mirai object.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+launch_job <- function(expr, env) {
+  do.call(
+    mirai::mirai,
+    c(list(.expr = expr, .compute = .RTEMISLIVE_COMPUTE), env)
+  )
 }
 
 
@@ -270,7 +290,7 @@ load_model_job <- function(session, bytes) {
 #' `max_concurrent - count_active_jobs()` allows. For each promotion,
 #' emits a `job.started` event to the owning session.
 #'
-#' Called once per tick from `loop_tick()`.
+#' Called once per tick from `host_tick()`.
 #'
 #' @param server Server env.
 #'
@@ -311,9 +331,9 @@ promote_queued_jobs <- function(server) {
     job <- queued[[i]]
     tryCatch(
       {
-        job[["mirai"]] <- do.call(
-          mirai::mirai,
-          c(list(.expr = job[["pending_expr"]]), job[["pending_env"]])
+        job[["mirai"]] <- launch_job(
+          job[["pending_expr"]],
+          job[["pending_env"]]
         )
         job[["status"]] <- "running"
         job[["started_at"]] <- Sys.time()
@@ -342,18 +362,17 @@ promote_queued_jobs <- function(server) {
         promoted <- promoted + 1L
       },
       error = function(e) {
-        # Promotion failed (mirai serialise error, daemon dead, emit
+        # Promotion failed (mirai serialize error, daemon dead, emit
         # broke). Mark the job as failed so it doesn't sit in the queue
         # forever and doesn't free up a slot we then re-promote into.
         # poll_active_jobs will pick up the terminal status next tick
         # and emit job.failed.
-        warning(
-          sprintf(
-            "rtemislive: promotion failed for job %s: %s",
-            job[["id"]],
-            conditionMessage(e)
-          ),
-          call. = FALSE
+        rtemis.core::warn(
+          "Promotion failed for job ",
+          job[["id"]],
+          ": ",
+          conditionMessage(e),
+          package = "rtemis.server"
         )
         job[["status"]] <- "failed"
         job[["completed_at"]] <- Sys.time()
@@ -431,6 +450,48 @@ count_active_jobs <- function() {
 }
 
 
+#' Count a session's queued, running, and cancelling jobs
+#'
+#' @param session Session env.
+#'
+#' @return Integer.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+count_unfinished_jobs <- function(session) {
+  jobs <- session[["jobs"]]
+  statuses <- vapply(
+    ls(jobs),
+    function(jid) jobs[[jid]][["status"]],
+    character(1L)
+  )
+  sum(statuses %in% c("queued", "running", "cancelling"))
+}
+
+
+#' Stop a session's unfinished jobs
+#'
+#' Used before the session is removed, when no later tick will finalize them.
+#'
+#' @param session Session env.
+#'
+#' @return `NULL`, invisibly.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+stop_session_jobs <- function(session) {
+  jobs <- session[["jobs"]]
+  for (jid in ls(jobs)) {
+    if (jobs[[jid]][["status"]] %in% c("queued", "running")) {
+      cancel_job(session, jid)
+    }
+  }
+  invisible(NULL)
+}
+
+
 # %% Resolution and finalization --------------------------------------------
 
 #' Non-blocking check for job resolution
@@ -476,7 +537,7 @@ check_job_resolved <- function(job) {
 #'   cancelled).
 #' - mirai produced a value, status was `running` -> `complete`.
 #' - mirai produced an `errorValue`, status was `cancelling` ->
-#'   `cancelled` (stop_mirai signalled an error).
+#'   `cancelled` (stop_mirai signaled an error).
 #' - mirai produced an `errorValue`, status was `running` -> `failed`.
 #'
 #' @param job Job env.
@@ -510,7 +571,7 @@ finalize_job <- function(job) {
     }
   } else {
     if (was_cancelling) {
-      # Daemon completed before the cancel landed - honour the client's
+      # Daemon completed before the cancel landed - honor the client's
       # request by reporting cancellation, but keep the result available
       # so callers can fetch it if they choose.
       job[["status"]] <- "cancelled"
@@ -559,12 +620,29 @@ finalize_job <- function(job) {
 
 #' Format a mirai error value into a short string
 #'
+#' An `errorValue` without a message is an NNG error code. Code 19, "Connection
+#' reset", is what a task returns when its daemon dies.
+#'
+#' @param value `errorValue` or `miraiError`: Value of a failed task.
+#'
+#' @return Character scalar.
+#'
 #' @author EDG
 #' @keywords internal
 #' @noRd
 format_mirai_error <- function(value) {
   .msg <- attr(value, "message", exact = TRUE)
   if (is.null(.msg)) {
+    if (is.integer(value) && length(value) == 1L) {
+      code <- as.integer(unclass(value))
+      if (code == 19L) {
+        return(paste0(
+          "The worker process ended before the job finished. ",
+          "Running out of memory is a common cause."
+        ))
+      }
+      return(paste("Worker error", nanonext::nng_error(code)))
+    }
     .msg <- tryCatch(as.character(value), error = function(e) "Unknown error.")
   }
   if (length(.msg) > 1L) {
@@ -582,7 +660,7 @@ format_mirai_error <- function(value) {
 #' marks `cancelling` and asks mirai to stop the task. The actual status
 #' transition to `cancelled` happens in `finalize_job()` once the daemon
 #' returns. See spec paragraph 6.6 for the honest caveat about compiled code not
-#' honouring R interrupts.
+#' honoring R interrupts.
 #'
 #' @param session Session env.
 #' @param job_id Character scalar.
