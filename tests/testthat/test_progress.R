@@ -120,7 +120,7 @@ test_that("find_session_for_job() returns the owning session", {
 
 # route_progress -------------------------------------------------------------
 
-# Synthesize a minimal job env so we can route to it without mirai.
+# A minimal job env, to route to without mirai.
 make_fake_job <- function(session, id = "job-test") {
   job <- new.env(parent = emptyenv())
   job[["id"]] <- id

@@ -250,7 +250,7 @@ test_that("decomp accepts a features subset and uses only those columns", {
   check_job_resolved(job)
   expect_equal(job[["status"]], "complete")
 
-  # Loadings should have exactly 2 variable rows: `a` and `c`.
+  # Loadings have exactly 2 variable rows: `a` and `c`.
   ld <- dispatch_request(
     conn,
     make_request(

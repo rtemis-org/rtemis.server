@@ -148,11 +148,8 @@ request_header <- function(headers, name) {
 #' Called when a WS upgrade is received. The `Origin` header (string) is
 #' compared exactly against `allowed_origins`. Anything else is rejected.
 #'
-#' Loopback variants (`http://localhost`, `http://127.0.0.1`) are matched
-#' on the host:port pair without requiring scheme equality with `https://`
-#' equivalents - `http://localhost:3000` matches the literal string only,
-#' since this is a local-only app and we don't want to silently accept
-#' `https://localhost:3000` from a different listener.
+#' The comparison covers scheme, host, and port: `http://localhost:3000` admits
+#' neither `https://localhost:3000` nor `http://localhost:3001`.
 #'
 #' @param origin Character scalar: Value of the `Origin` HTTP header.
 #' @param allowed_origins Character vector: Allowed origins.

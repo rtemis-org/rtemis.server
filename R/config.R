@@ -7,13 +7,11 @@
 # rtemis owns the whole list -> config-object reconstruction layer:
 # `.list_to_SuperConfig()` and its per-block friends accept both the flat shape
 # rtemislive's forms emit and the nested shape published at schema.rtemis.org,
-# strip `$`-prefixed document metadata, drop keys the target `setup_*()` does
+# strip `$`-prefixed document metadata, reject keys the target `setup_*()` does
 # not model, and validate through the same constructors `read_config()` uses.
-# Reimplementing any of that here would be a second copy of a contract rtemis
-# already publishes — and a copy that drifts, which is exactly how the
-# resampler vocabulary gap went unnoticed.
+# rtemis holds the one definition of that contract.
 #
-# So the server translates the *wire* and nothing else, which is three things:
+# The server translates the *wire* alone, in three steps:
 #
 #   1. Frame JSON is decoded with `simplifyVector = FALSE`, so every JSON array
 #      arrives as a list of length-1 atomics where rtemis wants an atomic
@@ -26,7 +24,7 @@
 # Everything after that is a `.list_to_*()` call.
 #
 # This layer performs no *name* translation: field names are identical across
-# the rtemislive form, the wire, the rtemis config object and the published
+# the rtemislive form, the wire, the rtemis config object, and the published
 # schema. Shape differs; names do not.
 
 #' Collapse JSON-array values into atomic vectors
@@ -40,12 +38,12 @@
 #' one, which is the discriminator: unnamed lists of length-1 atomics collapse
 #' to a vector; named lists are objects and are recursed into, so a genuine
 #' nested config (`impute_missRanger_params`, or a whole `hyperparameters`
-#' block) keeps its list shape. Anything else is returned unchanged — notably
+#' block) keeps its list shape. Anything else is returned unchanged -- notably
 #' lists of lists such as `inbag`.
 #'
 #' A search space is a tagged object (`{"candidates": [...]}`, see
 #' [rtemis::tune_over()]), so it recurses like any other and its array
-#' collapses to a vector — the tag is what marks it, never the length.
+#' collapses to a vector -- the tag is what marks it, never the length.
 #'
 #' @param x Value as decoded from a wire params payload.
 #'
@@ -76,10 +74,9 @@
 #' coincide with the `setup_*()` formals. This function therefore performs no
 #' renaming: it collapses scalar lists and normalizes one empty-string value.
 #'
-#' rtemis's `.list_to_*()` reconstructors now **reject** a key the config does
-#' not declare, so transport params must be removed here rather than left for
-#' rtemis to ignore. `.TRANSPORT_KEYS` names them; anything else unknown is a
-#' real mistake and should surface as an error.
+#' rtemis's `.list_to_*()` reconstructors reject a key the config does not
+#' declare, so the transport params, which `.TRANSPORT_KEYS` names, are removed
+#' here. Any other unknown key is an error of rtemis.
 #'
 #' @param params Named list of wire params.
 #'
@@ -100,7 +97,7 @@
   params[.TRANSPORT_KEYS] <- NULL
   # An empty `positive_class` is a client's "no selection" (a select with
   # nothing chosen, or a non-binary target). Map it to NULL, which is rtemis's
-  # unset value and means "use the second factor level" — the positive-class
+  # unset value and means "use the second factor level" -- the positive-class
   # convention for binary classification. Left as `""` it would be stored as a
   # real outcome level.
   pc <- params[["positive_class"]]
@@ -148,8 +145,7 @@
 #' portable, path-based recipe; rtemislive's data arrives over a frame rather
 #' than from disk, so the run needs the `SuperConfigLive` variant. The two
 #' classes carry identical properties apart from `.PORTABLE_ONLY_PROPERTIES`,
-#' so the properties are copied across generically — re-listing every block
-#' here is what would drift as `SuperConfig` grows.
+#' so the properties are copied by name, whichever `SuperConfig` declares.
 #'
 #' @param params Named list of `train` wire params.
 #' @param dat_training `data.table`: Training data resolved from `data_handle`.

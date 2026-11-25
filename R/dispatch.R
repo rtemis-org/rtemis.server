@@ -152,6 +152,7 @@ new_server_state <- function(
   e[["http"]] <- NULL
   e[["progress_sock"]] <- NULL
   e[["cancel_tick"]] <- NULL
+  e[["dialog"]] <- NULL
   e[["workers_started"]] <- FALSE
   e[["running"]] <- FALSE
   # Daemon supervision (`replace_daemons()`).
@@ -299,6 +300,12 @@ dispatch_request <- function(conn, frame, server) {
     },
     rtemislive_too_many_sessions = function(e) {
       make_error(req_id, "too_many", conditionMessage(e))
+    },
+    rtemislive_busy = function(e) {
+      make_error(req_id, "busy", conditionMessage(e))
+    },
+    rtemislive_unavailable = function(e) {
+      make_error(req_id, "unavailable", conditionMessage(e))
     },
     error = function(e) {
       make_error(req_id, "internal_error", conditionMessage(e))
@@ -543,7 +550,7 @@ handle_cluster_algorithms <- function(conn, frame, server) {
 #' before it could show the user why their plan will not run.
 #'
 #' The whole check is `rtemis::validate_config()`. This handler translates the
-#' wire and nothing else, which is two things: the frame decodes with
+#' wire alone, in two steps: the frame decodes with
 #' `simplifyVector = FALSE`, so JSON arrays arrive as lists of length-1 atomics
 #' (`.collapse_scalar_lists()`); and `schema_id` travels beside the config
 #' rather than inside it, so it is spliced back in as the `$schema` the config
@@ -832,7 +839,8 @@ handle_data_upload_begin <- function(conn, frame, server) {
     s,
     name = params[["name"]],
     total_bytes = params[["total_bytes"]],
-    n_chunks = params[["n_chunks"]]
+    n_chunks = params[["n_chunks"]],
+    connection_id = conn[["id"]]
   )
   make_response(req_id, list(upload_id = upload_id))
 }
@@ -972,19 +980,18 @@ handle_data_delete <- function(conn, frame, server) {
 #' `train` handler
 #'
 #' Submits a supervised-learning job. Hands the wire params to
-#' `build_super_config()` — which delegates to rtemis's own config
-#' reconstructor and binds the in-memory data resolved from `data_handle` —
+#' `build_super_config()` -- which delegates to rtemis's own config
+#' reconstructor and binds the in-memory data resolved from `data_handle` --
 #' then dispatches through `train()`.
 #'
 #' Wire params mirror `SuperConfig`'s properties one for one, so the block
 #' shapes are documented by the schemas at schema.rtemis.org rather than
 #' restated here. All optional except `data_handle`:
 #'
-#' - `data_handle` - id of a previously-uploaded dataset on this session
+#' - `data_handle` - id of a dataset uploaded to this session
 #' - `algorithm` - character, see `algorithms` method. Omit it when
 #'   `hyperparameters` is a variants set, which names the algorithm inside each
-#'   variant, or when no learner is being named at all and rtemis's default
-#'   should apply.
+#'   variant, or when no learner is named, which selects rtemis's default.
 #' - `hyperparameters` - flat `name -> value` map beside a top-level
 #'   `algorithm`, the config shape `{ algorithm, ...settings }` with the name
 #'   inside it, or the variants set `{ variants: { <name>: { algorithm,
@@ -1006,9 +1013,8 @@ handle_data_delete <- function(conn, frame, server) {
 #'
 #' Findings that do not stop the run travel with the accepted job as
 #' `diagnostics`, so a warning reaches the submitter instead of only the daemon
-#' log. `train()` checks a `SuperConfigLive` again on the other side -- that is
-#' the type's own guarantee rather than this handler's, and is what makes "no
-#' run reaches R unchecked" true of every submitter and not just this one.
+#' log. `train()` checks a `SuperConfigLive` again on the daemon, whichever
+#' submitter built it.
 #'
 #' @author EDG
 #' @keywords internal
@@ -1025,12 +1031,8 @@ handle_train <- function(conn, frame, server) {
   # `train()` has its own default, so "unset" means "rtemis chooses" exactly as
   # it does for every other block.
   #
-  # This handler used to require `algorithm`, which made two of the three
-  # unsubmittable: a caller holding a schema-valid config had nothing to put
-  # here, and one that sent an empty string to get past the check was refused
-  # much later by a message naming a learner nobody had written. Nothing is
-  # lost by dropping the check -- a misspelled key is caught by
-  # `.list_to_SuperConfig()`, which rejects anything it does not model.
+  # A misspelled key is caught by `.list_to_SuperConfig()`, which rejects a key
+  # it does not model.
   if (is.null(data_handle)) {
     rtemis.core::abort(
       "`data_handle` is required.",
@@ -1091,7 +1093,7 @@ handle_train <- function(conn, frame, server) {
     resp[["queue_position"]] <- job_queue_position(job)
   }
   # Always present, empty when the config is clean: a caller reading
-  # `length()` should not have to tell an absent field from an empty one.
+  # `length()` reads one field either way.
   resp[["diagnostics"]] <- findings
   make_response(req_id, resp)
 }
@@ -1107,7 +1109,7 @@ handle_train <- function(conn, frame, server) {
 #'
 #' Wire params (all optional except `data_handle`, `algorithm`):
 #'
-#' - `data_handle` - id of a previously-uploaded dataset on this session
+#' - `data_handle` - id of a dataset uploaded to this session
 #' - `algorithm` - character, one of `<kind>.algorithms`
 #' - `hyperparameters` - flat `name -> value` map accepted by `setup_<Algo>()`.
 #'   A canonical `DecompositionConfig` / `ClusteringConfig` carries the same
@@ -1366,8 +1368,8 @@ handle_job_cancel <- function(conn, frame, server) {
 #' - `summary`: lightweight JSON envelope - `to_json(result)` with the
 #'   heavy tabular fields (`varimp`, `varimp_per_resample`, per-resample
 #'   `res_metrics`) stripped. Use the dedicated slices below for those.
-#' - `raw`: full `to_json(result)` JSON, no stripping (debug / escape
-#'   hatch - may be very large for resampled fits or wide varimp).
+#' - `raw`: full `to_json(result)` JSON, for debugging. Its size grows with the
+#'   number of resamples and of variables.
 #' - `record`: the rtemis run record (`rtemis::record()`) as JSON, validating
 #'   against `https://schema.rtemis.org/<family>/v1/record.json`: every config
 #'   field with the origin it came from, the values each fold resolved, the
@@ -1408,8 +1410,6 @@ handle_job_cancel <- function(conn, frame, server) {
 #'   the pointer carries a `colors` map (`kind` -> hex fill, from
 #'   `rtemis::session_kind_colors`). Empty pointer when the result has no
 #'   recorded session (non-supervised results, or models from older rtemis).
-#' - `metrics`: structured JSON for `metrics_training` /
-#'   `metrics_validation` / `metrics_test`.
 #' - `review`, `writeup`: `{markdown}`, the Markdown of `rtemis::review()` or
 #'   `rtemis::writeup()` of a supervised result, rendered by
 #'   `rtemis::to_markdown()`.
@@ -1614,21 +1614,6 @@ handle_job_result <- function(conn, frame, server) {
       list(markdown = report_markdown(result, slice))
     ))
   }
-  if (slice == "metrics") {
-    if (!inherits(result, "rtemis::Supervised")) {
-      rtemis.core::abort(
-        "`metrics` slice requires a `Supervised` result.",
-        class = "rtemislive_invalid_params"
-      )
-    }
-    # A model stores metrics for exactly the samples it stores predictions for.
-    samples <- unique(rtemis::get_predictions(result)[["sample"]])
-    out <- lapply(
-      stats::setNames(nm = samples),
-      function(s) to_json(rtemis::get_metrics(result, s))
-    )
-    return(make_response(req_id, out))
-  }
   if (slice == "transformed") {
     if (!inherits(result, "rtemis::Decomposition")) {
       rtemis.core::abort(
@@ -1715,7 +1700,7 @@ handle_job_result <- function(conn, frame, server) {
       slice,
       "`. Use `summary`, `raw`, `record`, `varimp`, `predictions`, ",
       "`observed_predicted`, `roc`, `pr`, ",
-      "`session`, `metrics`, `review`, `writeup`, `transformed`, `loadings`, ",
+      "`session`, `review`, `writeup`, `transformed`, `loadings`, ",
       "or `assignments`."
     ),
     class = "rtemislive_invalid_params"
@@ -1754,12 +1739,9 @@ handle_job_delete <- function(conn, frame, server) {
 #' than a parallel implementation of the slicing logic those already have.
 #' See `load_model_job()` for the read, validate, and register.
 #'
-#' Single-shot: the whole `.rds` in one frame. Large enough to exceed a
-#' WebSocket frame -- confirmed in practice, not just in principle -- and the
-#' connection closes with code 1009 before this handler ever runs; a client
-#' that cannot bound a model's size in advance should use `job.load.begin` /
-#' `.chunk` / `.end` instead, mirroring `data.upload`'s own two paths for the
-#' same reason.
+#' The whole `.rds` travels in one frame. A frame larger than the limit of
+#' nanonext closes the connection with code 1009 before this handler runs;
+#' `job.load.begin`, `.chunk`, and `.end` take a model of any size.
 #'
 #' @author EDG
 #' @keywords internal
@@ -1809,7 +1791,8 @@ handle_job_load_begin <- function(conn, frame, server) {
     s,
     name = params[["name"]],
     total_bytes = params[["total_bytes"]],
-    n_chunks = params[["n_chunks"]]
+    n_chunks = params[["n_chunks"]],
+    connection_id = conn[["id"]]
   )
   make_response(req_id, list(upload_id = upload_id))
 }
@@ -1854,9 +1837,8 @@ handle_job_load_chunk <- function(conn, frame, server) {
 #'
 #' Reassembles the chunks (`assemble_chunked_upload`, shared with
 #' `end_upload`) and finalizes into a job exactly as `handle_job_load` does
-#' for the single-shot path (`load_model_job`) -- the two ways of getting the
-#' bytes here converge on one finalization, so a rejection means the same
-#' thing whichever path a client used.
+#' for a model in one frame (`load_model_job()`), so both paths reject the same
+#' objects with the same errors.
 #'
 #' @author EDG
 #' @keywords internal
@@ -1980,8 +1962,8 @@ handle_job_save <- function(conn, frame, server) {
   ) {
     filename <- paste0(job[["type"]] %||% "rtemis_object", "_", job_id)
   }
-  # `basename()` strips any directory components a client might smuggle into
-  # `filename`, keeping the write confined to the requested `dir`.
+  # `basename()` strips the directory components of `filename`, so the file
+  # is written in `dir`.
   filename <- basename(filename)
   if (!grepl("\\.rds$", filename, ignore.case = TRUE)) {
     filename <- paste0(filename, ".rds")
@@ -1997,88 +1979,6 @@ handle_job_save <- function(conn, frame, server) {
       bytes = as.numeric(file.size(path))
     )
   )
-}
-
-
-#' Open a native OS directory picker and return the chosen path
-#'
-#' The rtemis server runs on the user's own machine, so it can present a
-#' native folder chooser (Finder on macOS, the shell picker on Windows,
-#' `zenity` on Linux). Returns the selected directory, or `NULL` if the
-#' dialog was cancelled or no picker is available. The call blocks the
-#' server loop while the dialog is open; this is acceptable for the local
-#' single-user case.
-#'
-#' @param prompt Character scalar shown in the dialog title.
-#'
-#' @return Character scalar path, or `NULL`.
-#'
-#' @author EDG
-#' @keywords internal
-#' @noRd
-choose_directory <- function(prompt = "Select a folder") {
-  os <- Sys.info()[["sysname"]]
-  path <- tryCatch(
-    suppressWarnings({
-      if (identical(os, "Darwin")) {
-        script <- sprintf(
-          'POSIX path of (choose folder with prompt "%s")',
-          gsub('[\\\\"[:cntrl:]]', "", prompt)
-        )
-        system2(
-          "osascript",
-          c("-e", shQuote(script)),
-          stdout = TRUE,
-          stderr = FALSE
-        )
-      } else if (identical(os, "Windows")) {
-        utils::choose.dir(caption = prompt)
-      } else {
-        system2(
-          "zenity",
-          # `system2()` passes its arguments through a shell unquoted.
-          c(
-            "--file-selection",
-            "--directory",
-            shQuote(paste0("--title=", prompt))
-          ),
-          stdout = TRUE,
-          stderr = FALSE
-        )
-      }
-    }),
-    error = function(e) NULL
-  )
-  if (length(path) == 0L) {
-    return(NULL)
-  }
-  path <- trimws(path[[1L]])
-  if (is.na(path) || !nzchar(path)) {
-    return(NULL)
-  }
-  path
-}
-
-
-#' `dialog.choose_dir` handler
-#'
-#' Pops a native directory chooser on the server machine and returns the
-#' selected path (or `cancelled = TRUE`). Used by the client to populate a
-#' save destination without the user typing a path.
-#'
-#' @author EDG
-#' @keywords internal
-#' @noRd
-handle_choose_dir <- function(conn, frame, server) {
-  req_id <- frame[["header"]][["id"]] %||% NA_character_
-  params <- frame[["header"]][["params"]] %||% list()
-  prompt <- params[["prompt"]] %||% "Select a folder"
-  check_wire_string(prompt, "prompt")
-  path <- choose_directory(prompt)
-  if (is.null(path)) {
-    return(make_response(req_id, list(cancelled = TRUE)))
-  }
-  make_response(req_id, list(path = path, cancelled = FALSE))
 }
 
 

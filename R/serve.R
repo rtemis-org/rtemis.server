@@ -35,6 +35,15 @@
 #' A connection must come from an allowed origin and present the token within
 #' 10 seconds. The third failed attempt closes it.
 #'
+#' @section Waiting for the browser:
+#' The server sends each message synchronously. A browser tab that stops
+#' reading, such as one paused in a debugger or busy with a long computation,
+#' makes the server wait once about 1 MiB is unread, until the tab continues or
+#' closes. While it waits, the server handles no request and no interrupt.
+#' Running jobs continue. In headless Chromium, tabs that were hidden or frozen
+#' kept reading; Firefox, Safari, and the memory and energy saving of Chrome
+#' are untested.
+#'
 #' @param port Optional Integer \[1024, 49151\]: TCP port to listen on. If
 #'   `NULL`, defaults to the environment variable `RTEMISLIVE_PORT`, or to the
 #'   standard rtemislive port if that is unset.
@@ -605,6 +614,7 @@ stop_server <- function(server) {
         error = function(e) NULL
       )
     }
+    close_dialog(server)
     close_progress_socket(server[["progress_sock"]])
     server[["progress_sock"]] <- NULL
     live[["rtemislive_progress_url"]] <- NULL

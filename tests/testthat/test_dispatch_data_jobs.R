@@ -353,7 +353,7 @@ test_that("train + job.list + job.status + job.result happy path (GLM regression
   job_id <- submitted[["result"]][["job_id"]]
   expect_match(job_id, "^job-")
 
-  # job.list should include it
+  # job.list includes it
   listed <- dispatch_request(conn, make_request("job.list"), server)
   expect_true(listed[["ok"]])
   ids <- vapply(listed[["result"]][["jobs"]], `[[`, character(1L), "job_id")
@@ -844,7 +844,7 @@ test_that("job.load's timing comes from the model's own session, not upload time
     abs(as.numeric(job[["completed_at"]]) - as.numeric(run_finished)),
     1e-3
   )
-  # Not "now": the original run predates this test's job.load call.
+  # The run finished before the job.load call.
   expect_true(job[["completed_at"]] < Sys.time())
 })
 
@@ -917,8 +917,7 @@ test_that("job.load rejects a valid .rds that is not a Supervised object", {
 #' A resampled (`SupervisedRes`) fit, trained directly rather than through
 #' the wire's single-fit `train` RPC -- `outer_resampling_config` is what
 #' turns a `train()` outcome into a `SupervisedRes`, and every downstream
-#' slice in `serial.R` already accepts this shape alongside a plain
-#' `Supervised` fit, so `job.load` should too.
+#' slice in `serial.R` accepts it, as does `job.load`.
 train_glm_res_result <- function() {
   skip_if_not_installed("rtemis")
   set.seed(2026L)
@@ -963,9 +962,8 @@ test_that("job.load registers an uploaded SupervisedRes result as a complete job
 # job.load.begin / chunk / end / cancel --------------------------------------
 #
 # The single-shot job.load path closes the connection with code 1009
-# ("message too large") once a real fitted model exceeds a WebSocket frame --
-# observed against an actual .rds saved from R, not just a hypothesis. These
-# exercise the chunked alternative a client falls back to.
+# ("message too large") when a model exceeds a WebSocket frame. These tests
+# cover the chunked path.
 
 test_that("job.load.begin / chunk / end registers a chunked upload as a job", {
   clear_sessions()
@@ -1122,7 +1120,7 @@ test_that("job.load.cancel drops a pending chunked model upload", {
   expect_true(cancelled[["ok"]])
   expect_true(cancelled[["result"]][["cancelled"]])
 
-  # Gone: job.load.end on the cancelled upload_id now fails not_found.
+  # job.load.end on the canceled upload_id fails with not_found.
   end <- dispatch_request(
     conn,
     make_request("job.load.end", params = list(upload_id = uid)),

@@ -299,8 +299,7 @@ touch_session <- function(session) {
 #'
 #' @param id Character scalar: Session id.
 #'
-#' @return Logical - `TRUE` if a session was removed, `FALSE` if it
-#'   didn't exist.
+#' @return Logical - `TRUE` if the session existed.
 #'
 #' @author EDG
 #' @keywords internal
@@ -404,6 +403,8 @@ attach_connection <- function(session, connection_id) {
 
 #' Detach a connection from a session
 #'
+#' The unfinished uploads that the connection began are dropped.
+#'
 #' @param session Session env.
 #' @param connection_id Character scalar.
 #'
@@ -414,6 +415,7 @@ attach_connection <- function(session, connection_id) {
 #' @noRd
 detach_connection <- function(session, connection_id) {
   session[["connections"]] <- setdiff(session[["connections"]], connection_id)
+  drop_uploads(session, connection_id)
   touch_session(session)
 }
 
@@ -438,8 +440,8 @@ detach_connection <- function(session, connection_id) {
 #' @param session Session env.
 #' @param event Any R object - typically the result of `make_event()`.
 #'
-#' @return Logical - `TRUE` if the event was buffered, `FALSE` if it
-#'   should be sent directly because connections are attached.
+#' @return Logical - `TRUE` if the event was buffered, `FALSE` if
+#'   connections are attached, to which the caller sends it.
 #'
 #' @author EDG
 #' @keywords internal
@@ -514,7 +516,7 @@ list_sessions <- function() {
 #' Full session snapshot for `session.join` / `session.info`
 #'
 #' Lists current jobs (status-only summaries), data handles, and basic
-#' identity. Used to bring a newly-attached client up to speed.
+#' identity: what a newly attached client needs.
 #'
 #' @param session Session env.
 #'

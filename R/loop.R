@@ -14,7 +14,9 @@
 # 4. Polls active jobs and emits `job.complete` / `job.failed` /
 #    `job.cancelled`.
 # 5. Starts queued jobs.
-# 6. Emits heartbeats and removes idle sessions and stale data handles.
+# 6. Replies to the request of a folder dialog that ended.
+# 7. Emits heartbeats and removes idle sessions, stale data handles, and
+#    abandoned uploads.
 
 # %% Connection registry ----------------------------------------------------
 
@@ -62,6 +64,7 @@ disconnect_connection <- function(server, conn) {
   if (exists(cid, envir = reg, inherits = FALSE)) {
     rm(list = cid, envir = reg)
   }
+  close_dialog(server, conn)
   s <- connection_session(conn)
   conn[["session_id"]] <- NULL
   if (is.function(conn[["close_socket"]])) {
@@ -399,7 +402,7 @@ drain_and_route_progress <- function(server) {
 #'
 #' @param job Job env.
 #'
-#' @return Event envelope, or `NULL` if the job didn't actually resolve.
+#' @return Event envelope, or `NULL` if the job is unresolved.
 #'
 #' @author EDG
 #' @keywords internal
@@ -434,7 +437,7 @@ job_resolution_event <- function(job) {
 
 #' Poll every active job across all sessions
 #'
-#' For each job whose mirai has just resolved, emits the appropriate
+#' For each job whose mirai resolved since the last tick, emits the
 #' resolution event to its session's attached connections (or buffers
 #' it) and marks the job so the event isn't re-emitted on later ticks.
 #'
@@ -458,9 +461,8 @@ poll_active_jobs <- function(server) {
       }
       # Per-job tryCatch: a throw inside check_job_resolved (e.g. a
       # mirai value that fails to deserialize) or inside the emit path
-      # must not stall the entire tick. After repeated failures we mark
-      # the job as failed and stop retrying so it can't block
-      # `count_active_jobs()` forever.
+      # must not stall the entire tick. The third failure marks the job as
+      # failed, which releases its slot in `count_active_jobs()`.
       result <- tryCatch(
         {
           # `check_job_resolved()` short-circuits TRUE for already-
@@ -547,14 +549,15 @@ emit_heartbeats <- function(server) {
 }
 
 
-#' Run the periodic GC pass: idle sessions + stale data handles
+#' Run the periodic GC pass: idle sessions, stale data handles, and abandoned
+#' uploads
 #'
 #' Updates `server$last_gc`.
 #'
 #' @param server Server env.
 #'
-#' @return Named list - `sessions_dropped` (character) and
-#'   `data_handles_dropped` (named list per session).
+#' @return Named list - `sessions_dropped` (character), `data_handles_dropped`,
+#'   and `uploads_dropped` (each a named list per session).
 #'
 #' @author EDG
 #' @keywords internal
@@ -562,18 +565,24 @@ emit_heartbeats <- function(server) {
 gc_tick <- function(server) {
   now <- Sys.time()
   data_dropped <- list()
+  uploads_dropped <- list()
   for (sid in ls(session_registry())) {
     s <- session_registry()[[sid]]
     dropped <- gc_data(s, now = now, ttl = server[["data_ttl"]])
     if (length(dropped) > 0L) {
       data_dropped[[sid]] <- dropped
     }
+    dropped <- gc_uploads(s, now = now)
+    if (length(dropped) > 0L) {
+      uploads_dropped[[sid]] <- dropped
+    }
   }
   sessions_dropped <- gc_sessions(now = now, ttl = server[["session_ttl"]])
   server[["last_gc"]] <- now
   list(
     sessions_dropped = sessions_dropped,
-    data_handles_dropped = data_dropped
+    data_handles_dropped = data_dropped,
+    uploads_dropped = uploads_dropped
   )
 }
 
@@ -693,6 +702,7 @@ host_tick <- function(server) {
   progress_routed <- drain_and_route_progress(server)
   jobs_resolved <- poll_active_jobs(server)
   jobs_promoted <- promote_queued_jobs(server)
+  dialog_ended <- poll_dialog(server)
   periodic <- maybe_tick_periodic(server)
   list(
     unauthenticated_closed = unauthenticated_closed,
@@ -700,6 +710,7 @@ host_tick <- function(server) {
     progress_routed = progress_routed,
     jobs_resolved = jobs_resolved,
     jobs_promoted = jobs_promoted,
+    dialog_ended = dialog_ended,
     heartbeats_emitted = periodic[["heartbeats_emitted"]],
     gc_ran = periodic[["gc_ran"]]
   )

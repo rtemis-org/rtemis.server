@@ -282,7 +282,7 @@ test_that("config.validate records the plan step on every finding", {
   conn <- authed_conn(server, attach_session = "s")
 
   # A JSON number decodes to a double, so the step arrives as `2` rather than
-  # `2L`. Written that way here because that is what a client actually sends.
+  # `2L`, as from a client.
   resp <- dispatch_request(
     conn,
     make_request(

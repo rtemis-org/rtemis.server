@@ -310,3 +310,44 @@ test_that("uploads reject counts and sizes that do not add up", {
   expect_error(chunk_upload(s, list(1), 1, as.raw(1)), class = invalid)
   expect_error(get_data(s, 1), class = invalid)
 })
+
+test_that("a session holds at most .UPLOADS_MAX unfinished uploads", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  s <- new_session("s")
+  ids <- replicate(.UPLOADS_MAX, begin_upload(s, "x", 10, 2))
+  expect_error(begin_upload(s, "x", 10, 2), class = "rtemislive_too_many")
+  cancel_upload(s, ids[[1L]])
+  id <- begin_upload(s, "x", 10, 2)
+  expect_true(id %in% ls(pending_uploads(s)))
+})
+
+test_that("gc_uploads() drops an upload after its last chunk expires", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  s <- new_session("s")
+  old <- begin_upload(s, "old", 10, 2)
+  kept <- begin_upload(s, "kept", 10, 2)
+  pu <- pending_uploads(s)
+  pu[[old]][["last_used"]] <- Sys.time() - .UPLOAD_TTL - 1
+  pu[[kept]][["last_used"]] <- Sys.time() - .UPLOAD_TTL - 1
+  # A chunk renews an upload.
+  chunk_upload(s, kept, 1, raw(5L))
+  expect_equal(gc_uploads(s), old)
+  expect_equal(ls(pu), kept)
+  expect_error(
+    chunk_upload(s, old, 1, raw(5L)),
+    class = "rtemislive_not_found"
+  )
+  expect_equal(gc_uploads(s), character(0L))
+})
+
+test_that("detach_connection() drops the uploads of that connection alone", {
+  clear_sessions()
+  on.exit(clear_sessions(), add = TRUE)
+  s <- new_session("s")
+  begin_upload(s, "a", 10, 2, connection_id = "conn-a")
+  b <- begin_upload(s, "b", 10, 2, connection_id = "conn-b")
+  detach_connection(s, "conn-a")
+  expect_equal(ls(pending_uploads(s)), b)
+})

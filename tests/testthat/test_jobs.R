@@ -8,9 +8,8 @@ skip_if_not_installed("rtemis")
 
 # File-level: ensure a small daemon pool is available for these tests.
 # Daemons load `library(rtemis)` from the system library on first use of
-# `rtemis::...`; we assume the installed rtemis matches the version under
-# test (re-`install` after source changes if the daemons need to see
-# them).
+# `rtemis::...`, so the installed version is the one under test: reinstall
+# after source changes that the daemons need.
 if (!isTRUE(getOption("rtemislive.test_daemons_started"))) {
   mirai::daemons(2L, .compute = .RTEMISLIVE_COMPUTE)
   options(rtemislive.test_daemons_started = TRUE)
@@ -174,8 +173,8 @@ test_that("check_job_resolved() returns FALSE while running, TRUE after", {
       1L
     })
   )
-  # Immediately after submission, mirai should still be unresolved
-  # (within the 0.1s sleep window).
+  # Immediately after submission, within the 0.1 s sleep, the mirai is
+  # unresolved.
   if (mirai::unresolved(job[["mirai"]])) {
     expect_false(check_job_resolved(job))
   }
@@ -232,7 +231,7 @@ test_that("list_jobs() returns wire summaries for all jobs in a session", {
   expect_length(out, 2L)
   statuses <- vapply(out, `[[`, character(1L), "status")
   expect_setequal(statuses, c("complete", "failed"))
-  # Each summary has the keys we promise
+  # Each summary has these keys
   for (entry in out) {
     expect_true(all(
       c("job_id", "type", "status", "submitted_at") %in%
@@ -354,7 +353,7 @@ test_that("promote_queued_jobs() launches queued jobs in FIFO order", {
     max_concurrent = 1L
   )
   # Force visibly different submission timestamps so FIFO order is
-  # unambiguous on fast systems.
+  # unambiguous.
   Sys.sleep(0.01)
   j2 <- submit_job(s, "test", list(), expr = quote(2L), max_concurrent = 1L)
   Sys.sleep(0.01)
@@ -368,7 +367,7 @@ test_that("promote_queued_jobs() launches queued jobs in FIFO order", {
   # No free slot yet; nothing promoted.
   expect_equal(promote_queued_jobs(server), 0L)
 
-  # Wait for j1 to finish + finalize, then promote should pick j2 first.
+  # Wait for j1 to finish + finalize, then promotion picks j2 first.
   wait_for_resolved(j1)
   check_job_resolved(j1)
   expect_equal(promote_queued_jobs(server), 1L)

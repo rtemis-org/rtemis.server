@@ -18,7 +18,15 @@
 #
 # Chunked uploads (`data.upload.begin` / `chunk` / `end`) use a separate
 # `pending_uploads` sub-env on the session, since assembly is in-progress
-# state that doesn't become a data_handle until `end_upload()` succeeds.
+# state that doesn't become a data_handle until `end_upload()` succeeds. An
+# upload that neither ends nor is canceled is dropped when the connection that
+# began it leaves the session, or `.UPLOAD_TTL` seconds after its last chunk.
+
+# Seconds after the last chunk at which an unfinished upload is dropped.
+.UPLOAD_TTL <- 600
+
+# Unfinished uploads that a session holds at the same time.
+.UPLOADS_MAX <- 4L
 
 # %% Identifier helpers ------------------------------------------------------
 
@@ -144,8 +152,8 @@ decode_arrow_ipc <- function(bytes) {
   )
   # Arrow string columns land as `character` in R; rtemis's ML pipeline
   # expects categoricals as `factor`. DuckDB-WASM keeps text columns as
-  # plain strings (good for ECharts), so this is the single boundary
-  # where we coerce. Numeric / integer / logical columns are unaffected.
+  # plain strings, and this is the single place that converts them. Numeric,
+  # integer, and logical columns are unaffected.
   x <- data.table::as.data.table(as.data.frame(tbl))
   # Convert all character columns to factors in-place
   x[,
@@ -231,13 +239,21 @@ pending_uploads <- function(session) {
 #'   number.
 #' @param n_chunks Numeric \[1, total_bytes\]: Number of chunks the client will
 #'   send, a whole number.
+#' @param connection_id Optional Character: Id of the connection that begins the
+#'   upload, whose end drops it.
 #'
 #' @return Character scalar - the upload_id.
 #'
 #' @author EDG
 #' @keywords internal
 #' @noRd
-begin_upload <- function(session, name, total_bytes, n_chunks) {
+begin_upload <- function(
+  session,
+  name,
+  total_bytes,
+  n_chunks,
+  connection_id = NULL
+) {
   check_wire_string(name, "name")
   check_wire_whole(total_bytes, "total_bytes")
   check_wire_whole(n_chunks, "n_chunks")
@@ -252,6 +268,15 @@ begin_upload <- function(session, name, total_bytes, n_chunks) {
     )
   }
   n_chunks <- as.integer(n_chunks)
+  pu <- pending_uploads(session)
+  if (length(ls(pu)) >= .UPLOADS_MAX) {
+    rtemis.core::abort(
+      "The session has ",
+      .UPLOADS_MAX,
+      " unfinished uploads, the maximum. Wait for one to end, or cancel it.",
+      class = "rtemislive_too_many"
+    )
+  }
 
   u <- new.env(parent = emptyenv())
   u[["upload_id"]] <- new_upload_id()
@@ -264,8 +289,9 @@ begin_upload <- function(session, name, total_bytes, n_chunks) {
   u[["received_bytes"]] <- 0
   u[["received_count"]] <- 0L
   u[["created_at"]] <- Sys.time()
+  u[["last_used"]] <- u[["created_at"]]
+  u[["connection_id"]] <- connection_id
 
-  pu <- pending_uploads(session)
   pu[[u[["upload_id"]]]] <- u
   touch_session(session)
   u[["upload_id"]]
@@ -300,7 +326,9 @@ chunk_upload <- function(session, upload_id, chunk_index, bytes) {
     rtemis.core::abort(
       "Unknown upload_id '",
       upload_id,
-      "'.",
+      "'. An unfinished upload is dropped ",
+      .UPLOAD_TTL,
+      " s after its last chunk, and when its connection leaves the session.",
       class = "rtemislive_not_found"
     )
   }
@@ -336,6 +364,7 @@ chunk_upload <- function(session, upload_id, chunk_index, bytes) {
   u[["chunks"]][[chunk_index]] <- bytes
   u[["received_bytes"]] <- u[["received_bytes"]] + length(bytes)
   u[["received_count"]] <- u[["received_count"]] + 1L
+  u[["last_used"]] <- Sys.time()
 
   touch_session(session)
   list(
@@ -348,11 +377,8 @@ chunk_upload <- function(session, upload_id, chunk_index, bytes) {
 
 #' Reassemble a chunked upload's bytes, and clear its pending state
 #'
-#' The part every `*.upload.end` handler needs identically -- `end_upload`
-#' (Arrow IPC data) and `job.load.end` (an uploaded `.rds`) differ only in
-#' what the finished bytes decode to, never in how the chunks got there or
-#' how completeness is checked. Extracted so that difference is the only
-#' thing either caller has to say.
+#' Shared by the `*.upload.end` handlers. `end_upload()` decodes the bytes as
+#' Arrow IPC data, and `job.load.end` as an `.rds` file.
 #'
 #' @param session Session env.
 #' @param upload_id Character scalar.
@@ -371,7 +397,9 @@ assemble_chunked_upload <- function(session, upload_id) {
     rtemis.core::abort(
       "Unknown upload_id '",
       upload_id,
-      "'.",
+      "'. An unfinished upload is dropped ",
+      .UPLOAD_TTL,
+      " s after its last chunk, and when its connection leaves the session.",
       class = "rtemislive_not_found"
     )
   }
@@ -453,6 +481,49 @@ cancel_upload <- function(session, upload_id) {
 }
 
 
+#' Drop the unfinished uploads that a connection began
+#'
+#' @param session Session env.
+#' @param connection_id Character: Connection id.
+#'
+#' @return Character vector of the upload ids dropped.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+drop_uploads <- function(session, connection_id) {
+  pu <- pending_uploads(session)
+  dropped <- Filter(
+    function(id) identical(pu[[id]][["connection_id"]], connection_id),
+    ls(pu)
+  )
+  rm(list = dropped, envir = pu)
+  dropped
+}
+
+
+#' Drop the uploads that received no chunk for `ttl` seconds
+#'
+#' @param session Session env.
+#' @param now POSIXct: Current time.
+#' @param ttl Numeric: Seconds.
+#'
+#' @return Character vector of the upload ids dropped.
+#'
+#' @author EDG
+#' @keywords internal
+#' @noRd
+gc_uploads <- function(session, now = Sys.time(), ttl = .UPLOAD_TTL) {
+  pu <- pending_uploads(session)
+  dropped <- Filter(
+    function(id) difftime(now, pu[[id]][["last_used"]], units = "secs") > ttl,
+    ls(pu)
+  )
+  rm(list = dropped, envir = pu)
+  dropped
+}
+
+
 # %% Lookup / list / delete --------------------------------------------------
 
 #' Get the data.table for a data_handle
@@ -525,7 +596,7 @@ list_data_handles <- function(session) {
 #' @param session Session env.
 #' @param handle Character scalar.
 #'
-#' @return Logical - `TRUE` if a handle was removed.
+#' @return Logical - `TRUE` if a handle existed.
 #'
 #' @author EDG
 #' @keywords internal

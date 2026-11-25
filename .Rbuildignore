@@ -25,3 +25,4 @@
 ^SKILL\.md$
 ^tools$
 ^coverage$
+^\.style-scan-ignore$

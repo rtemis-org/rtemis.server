@@ -1,6 +1,6 @@
 # %% Wire -> rtemis config translation ---------------------------------------
 # `R/config.R` is the single place the wire vocabulary of `train` requests
-# (`setup_*()` formals) is mapped onto rtemis's config-object property names — the vocabulary the
+# (`setup_*()` formals) is mapped onto rtemis's config-object property names -- the vocabulary the
 # schemas at schema.rtemis.org define. Everything else is delegated to rtemis's
 # own `.list_to_*()` reconstructors, so these tests pin the translation and the
 # fact that both vocabularies reach the same object.
@@ -68,7 +68,7 @@ test_that("build_super_config builds a SuperConfigLive from the form wire shape"
       preprocessor_config = list(scale = TRUE, center = TRUE),
       # The selected variant's fields and no others: rtemislive's form is
       # built from the KFold leaf schema, so it cannot offer `train_p` or
-      # `verbosity`, and rtemis would now reject them if it did.
+      # `verbosity`, which rtemis rejects.
       outer_resampling_config = list(type = "KFold", n_resamples = 3L),
       positive_class = "",
       question = "does it build?"
@@ -164,10 +164,7 @@ test_that("build_super_config accepts a canonical schema.rtemis.org config", {
 test_that("build_super_config accepts a variants set as the learner", {
   # `supervised/r/v1`'s second shape for `hyperparameters`: a union of named
   # configurations of one algorithm, which names the algorithm inside each
-  # variant rather than at the top level. An agent building a plan reaches for
-  # it, and it used to be unrunnable -- the submitter had no top-level
-  # `algorithm` to send, and an empty string got as far as building the learner
-  # before failing on a name nobody wrote.
+  # variant and leaves the top level without one.
   #
   # `.nest_hyperparameters()` must leave the block alone here: folding an
   # `algorithm` in is what would bury the variants.
@@ -196,9 +193,7 @@ test_that("build_super_config accepts a variants set as the learner", {
 test_that("build_super_config accepts a config that names no learner", {
   # The third valid form: `hyperparameters` is nullable in `supervised/r/v1` and
   # `train()` has its own default, so a config naming no algorithm means
-  # "rtemis chooses" rather than "the caller forgot". The handler used to
-  # require one, which made this unsubmittable even though `train()` has always
-  # run it.
+  # that rtemis chooses.
   dt <- data.table::data.table(a = rnorm(20), b = rnorm(20), y = rnorm(20))
   cfg <- build_cfg(
     list(

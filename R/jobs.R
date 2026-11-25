@@ -184,10 +184,8 @@ launch_job <- function(expr, env) {
 #' whichever path got the bytes here, they converge on the same read,
 #' validate, and register.
 #'
-#' `readRDS()` from a temp file, not `unserialize()` on the raw vector
-#' directly: it is what a client that wrote the file with `saveRDS()` (the
-#' ordinary R workflow, `outdir` or otherwise) actually produced, compression
-#' included. Rejected outright unless the object is a `Supervised` or
+#' The bytes are read with `readRDS()` from a temporary file, which decompresses
+#' a file of `saveRDS()`; `unserialize()` of the raw vector does not. Rejected outright unless the object is a `Supervised` or
 #' `SupervisedRes` result -- the same pair every downstream slice
 #' (`summary_json`, `varimp_table`, `predictions_table`, ...) already accepts
 #' (`serial.R`), a resampled/cross-validated fit being exactly as valid a
@@ -243,10 +241,9 @@ load_model_job <- function(session, bytes) {
   }
 
   # The run record's provenance holds the *original* run's wall-clock bounds
-  # (empty when the model carries no session). Preferring those over "now"
-  # keeps the badge's elapsed time honest: otherwise submitted, started, and
-  # completed all collapse to the instant of upload and every loaded model
-  # reads "Done in 0.00s".
+  # (empty when the model carries no session). They give the job the elapsed
+  # time of that run; with the time of the upload, every loaded model would
+  # read "Done in 0.00s".
   provenance <- rtemis::record(result)[["provenance"]]
   run_started <- parse_record_time(provenance[["started"]])
   run_finished <- parse_record_time(provenance[["finished"]])
@@ -363,8 +360,7 @@ promote_queued_jobs <- function(server) {
       },
       error = function(e) {
         # Promotion failed (mirai serialize error, daemon dead, emit
-        # broke). Mark the job as failed so it doesn't sit in the queue
-        # forever and doesn't free up a slot we then re-promote into.
+        # broke). The job is marked as failed, which takes it out of the queue.
         # poll_active_jobs will pick up the terminal status next tick
         # and emit job.failed.
         rtemis.core::warn(
@@ -656,11 +652,11 @@ format_mirai_error <- function(value) {
 
 #' Cancel a job
 #'
-#' Best-effort. If the job is already done, returns `FALSE`. Otherwise
+#' If the job is already done, returns `FALSE`. Otherwise
 #' marks `cancelling` and asks mirai to stop the task. The actual status
 #' transition to `cancelled` happens in `finalize_job()` once the daemon
-#' returns. See spec paragraph 6.6 for the honest caveat about compiled code not
-#' honoring R interrupts.
+#' returns. Compiled code does not check for R interrupts; see spec
+#' paragraph 6.6.
 #'
 #' @param session Session env.
 #' @param job_id Character scalar.
@@ -710,9 +706,8 @@ cancel_job <- function(session, job_id) {
   tryCatch(
     mirai::stop_mirai(job[["mirai"]]),
     error = function(e) {
-      # stop_mirai may error if the task has already resolved between our
-      # check and the call. That's fine - the next loop tick will pick up
-      # the resolution.
+      # The task may resolve between the check and the call. The next tick
+      # polls the resolution.
       NULL
     }
   )
@@ -807,8 +802,8 @@ list_jobs <- function(session) {
 
 #' Delete a finished job
 #'
-#' Refuses to delete running/cancelling jobs - clients should `cancel`
-#' them first and wait for resolution.
+#' Refuses a running or cancelling job: a client cancels it and waits for its
+#' resolution first.
 #'
 #' @param session Session env.
 #' @param job_id Character scalar.

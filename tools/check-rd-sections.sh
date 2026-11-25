@@ -104,7 +104,7 @@ for (f in sort(files)) {
   has_value    <- "\\value"    %in% tags
   has_examples <- "\\examples" %in% tags
 
-  # Categorise docs where \value / \examples are conventionally absent.
+  # Categorize docs where \value / \examples are conventionally absent.
   # "import" is roxygen's docType for re-export stubs (man/reexports.Rd).
   is_data_pkg <- dtype %in% c("data", "package", "import")
   is_internal <- "\\keyword" %in% tags &&

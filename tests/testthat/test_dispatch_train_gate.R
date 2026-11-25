@@ -165,8 +165,7 @@ test_that("a clean config is accepted and reports no findings", {
 
   expect_true(resp[["ok"]])
   expect_false(is.null(resp[["result"]][["job_id"]]))
-  # Present and empty rather than absent: a caller reading `length()` should
-  # not have to tell one from the other.
+  # Present and empty, so that a caller reads its `length()`.
   expect_identical(resp[["result"]][["diagnostics"]], list())
 })
 

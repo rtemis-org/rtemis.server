@@ -468,7 +468,7 @@ test_that("gc_tick() returns dropped session ids and updates last_gc", {
   on.exit(clear_sessions(), add = TRUE)
   s <- make_server()
   sess <- new_session("old")
-  sess[["last_seen"]] <- Sys.time() - 1e6 # very old, no connections
+  sess[["last_seen"]] <- Sys.time() - 1e6 # old, no connections
   s[["session_ttl"]] <- 60
   s[["data_ttl"]] <- 60
   before <- s[["last_gc"]]

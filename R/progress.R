@@ -16,9 +16,8 @@
 # emits a `job.progress` event to the session's attached connections
 # (buffered when none are attached).
 #
-# Daemons run in separate R processes. We use `ipc://<tmp>` URLs for the
-# socket so daemons can connect across processes. `inproc://` only works
-# inside a single R process and is useful for tests.
+# Daemons run in separate R processes, and connect to the socket at an
+# `ipc://<tmp>` URL. `inproc://` works inside a single R process, for tests.
 
 # %% Progress URL ----------------------------------------------------------------------------------
 

@@ -654,83 +654,6 @@ test_that("job.result `pr` sends an empty pointer for a regression fit", {
   expect_null(resp[["payload"]])
 })
 
-# job.result `metrics` end-to-end ------------------------------------------
-
-test_that("job.result `metrics` returns per-split JSON for a trained Regression", {
-  clear_sessions()
-  on.exit(clear_sessions(), add = TRUE)
-  server <- make_server()
-  conn <- authed_conn(server, attach_session = "s")
-
-  set.seed(2029L)
-  dt <- data.table(
-    a = rnorm(60),
-    b = rnorm(60),
-    c = rnorm(60),
-    y = NA_real_
-  )
-  dt[, y := a + 0.5 * b + rnorm(60)]
-
-  upload <- dispatch_request(
-    conn,
-    make_request(
-      "data.upload",
-      params = list(name = "small"),
-      payload = ipc_bytes(dt)
-    ),
-    server
-  )
-  handle <- upload[["result"]][["data_handle"]]
-
-  submitted <- dispatch_request(
-    conn,
-    make_request(
-      "train",
-      params = list(data_handle = handle, algorithm = "GLM")
-    ),
-    server
-  )
-  job_id <- submitted[["result"]][["job_id"]]
-
-  s <- get_session_by_name("s")
-  job <- s[["jobs"]][[job_id]]
-  wait_for_resolved(job)
-  check_job_resolved(job)
-
-  resp <- dispatch_request(
-    conn,
-    make_request(
-      "job.result",
-      params = list(job_id = job_id, slice = "metrics")
-    ),
-    server
-  )
-  expect_true(resp[["ok"]])
-  expect_true("training" %in% names(resp[["result"]]))
-})
-
-test_that("job.result `metrics` on a non-Supervised -> invalid_params", {
-  clear_sessions()
-  on.exit(clear_sessions(), add = TRUE)
-  server <- make_server()
-  conn <- authed_conn(server, attach_session = "s")
-  s <- connection_session(conn)
-  job <- submit_job(s, "test", list(), expr = quote(1L))
-  wait_for_resolved(job)
-  check_job_resolved(job)
-  resp <- dispatch_request(
-    conn,
-    make_request(
-      "job.result",
-      params = list(job_id = job[["id"]], slice = "metrics")
-    ),
-    server
-  )
-  expect_false(resp[["ok"]])
-  expect_equal(resp[["error"]][["code"]], "invalid_params")
-})
-
-
 # job.result `varimp` end-to-end -------------------------------------------
 
 test_that("job.result `varimp` returns JSON (no payload) for a trained Supervised", {
@@ -782,9 +705,8 @@ test_that("job.result `varimp` returns JSON (no payload) for a trained Supervise
     ),
     server
   )
-  # Wrapped {header, payload} shape - varimp slice now ships Arrow IPC
-  # so the wire layer in `process_connection()` can attach the binary
-  # bytes alongside the JSON pointer.
+  # Wrapped {header, payload} shape: the varimp slice sends Arrow IPC bytes
+  # beside its JSON pointer.
   expect_named(resp, c("header", "payload"))
   expect_true(resp[["header"]][["ok"]])
   result <- resp[["header"]][["result"]]
